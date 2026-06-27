@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TriageBot.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using TriageBot.Infrastructure.Persistence;
 namespace TriageBot.Infrastructure.Migrations
 {
     [DbContext(typeof(TriageBotDbContext))]
-    partial class TriageBotDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260627181029_AddPendingApprovalToAgentRun")]
+    partial class AddPendingApprovalToAgentRun
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

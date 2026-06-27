@@ -1,8 +1,11 @@
+using System.Text.Json;
+using Microsoft.Agents.AI;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using TriageBot.Core.Abstractions;
 using TriageBot.Core.Domain;
+using TriageBot.Core.Enums;
 using TriageBot.Infrastructure.Ai;
 using TriageBot.Infrastructure.Persistence;
 using TriageBot.Infrastructure.Tools;
@@ -62,35 +65,53 @@ public sealed class TicketTriageService : ITicketTriageService
 
         _logger.LogInformation("Triage run {RunId} started for ticket {TicketId} ({Provider}).", run.Id, ticketId, run.Provider);
 
-        // 2. Run the agent. Tools persist their own results + audit steps during the run.
+        // 2. Run the agent. Non-final tools execute (and self-log). A final-action tool does NOT execute:
+        //    it queues a pending proposal on the run and moves the ticket to AwaitingApproval, then the agent stops.
         var tools = new TicketTools(_db, run.Id);
         var response = await _agent.RunAsync(ticket, provider, tools.AsAITools(), cancellationToken);
 
-        // 3. Record the agent's final reasoning/summary as a step for the audit trail.
-        await AppendReasoningStepAsync(run.Id, response.Text, cancellationToken);
-
-        // 4. Finalize the run. Final tools (save_ticket_result / escalate_to_human) already set Outcome +
-        //    CompletedAtUtc on this same tracked entity; if the agent stopped earlier (e.g. asked for
-        //    clarification), fall back to its summary.
-        run.Outcome ??= Truncate(response.Text, 1000);
-        run.CompletedAtUtc ??= DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-
-        var stepCount = await _db.AgentSteps.CountAsync(s => s.AgentRunId == run.Id, cancellationToken);
-
-        foreach (var step in await _db.AgentSteps
-                     .Where(s => s.AgentRunId == run.Id)
-                     .OrderBy(s => s.StepIndex)
-                     .ToListAsync(cancellationToken))
+        var awaitingApproval = run.PendingToolName is not null; // set by the final-action tool during the run
+        if (awaitingApproval)
         {
-            _logger.LogInformation("Run {RunId} step {Index}: {Tool} -> {Message}",
-                run.Id, step.StepIndex, step.ToolName ?? "(reasoning)", step.Message);
+            // 3a. HUMAN-IN-THE-LOOP: paused with the proposed final action persisted, awaiting a decision.
+            run.Outcome = $"Awaiting human approval for '{run.PendingToolName}'.";
+            // CompletedAtUtc stays null: the run is paused, not finished.
+            _logger.LogInformation(
+                "Triage run {RunId} for ticket {TicketId} PAUSED — awaiting approval for '{Tool}'.",
+                run.Id, ticketId, run.PendingToolName);
+        }
+        else
+        {
+            // 3b. Agent finished without proposing a final action (e.g. asked the requester for clarification).
+            await AppendReasoningStepAsync(run.Id, response.Text, cancellationToken);
+            run.Outcome ??= Truncate(response.Text, 1000);
+            run.CompletedAtUtc ??= DateTime.UtcNow;
         }
 
-        _logger.LogInformation("Triage run {RunId} finished for ticket {TicketId}: {StepCount} steps. Outcome: {Outcome}",
+        await _db.SaveChangesAsync(cancellationToken);
+
+        var stepCount = await LogRunStepsAsync(run.Id, cancellationToken);
+        _logger.LogInformation("Triage run {RunId} for ticket {TicketId}: {StepCount} steps. Outcome: {Outcome}",
             run.Id, ticketId, stepCount, run.Outcome);
 
-        return new TriageRunResult(run.Id, ticketId, run.Provider, run.Outcome, stepCount);
+        return new TriageRunResult(
+            run.Id, ticketId, run.Provider, run.Outcome, stepCount, awaitingApproval, run.PendingToolName);
+    }
+
+    private async Task<int> LogRunStepsAsync(Guid runId, CancellationToken ct)
+    {
+        var steps = await _db.AgentSteps
+            .Where(s => s.AgentRunId == runId)
+            .OrderBy(s => s.StepIndex)
+            .ToListAsync(ct);
+
+        foreach (var step in steps)
+        {
+            _logger.LogInformation("Run {RunId} step {Index}: {Tool} -> {Message}",
+                runId, step.StepIndex, step.ToolName ?? "(reasoning)", step.Message);
+        }
+
+        return steps.Count;
     }
 
     private async Task AppendReasoningStepAsync(Guid runId, string? text, CancellationToken ct)

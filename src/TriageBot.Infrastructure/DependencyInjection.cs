@@ -28,6 +28,7 @@ public static class DependencyInjection
         // Core triage agent (Microsoft Agent Framework) + orchestration service.
         services.AddScoped<TicketTriageAgent>();
         services.AddScoped<ITicketTriageService, TicketTriageService>();
+        services.AddScoped<ITicketApprovalService, TicketApprovalService>();
 
         // Heuristic placeholders kept for reference / tests.
         services.AddSingleton<KeywordClassifierTool>();

@@ -69,11 +69,13 @@ app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, Ca
 
 // Run the triage agent over a ticket. T5: executes immediately (no approval gate yet — added in T6).
 app.MapPost("/api/tickets/{id:guid}/process", async (
-    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory, CancellationToken ct) =>
+    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory) =>
 {
     try
     {
-        var result = await triage.ProcessTicketAsync(id, ct);
+        // Deliberately not tied to the request-abort token: a triage run mutates state and may pause for
+        // approval, so a transient client disconnect must not abort it mid-run and strand the ticket.
+        var result = await triage.ProcessTicketAsync(id, CancellationToken.None);
         return result is null
             ? Results.NotFound(new { error = $"Ticket {id} was not found." })
             : Results.Ok(result);
@@ -88,4 +90,23 @@ app.MapPost("/api/tickets/{id:guid}/process", async (
     }
 });
 
+// Human-in-the-loop: approve the pending final action (optionally editing the draft first).
+app.MapPost("/api/tickets/{id:guid}/approve", async (
+    Guid id, ApproveRequest? body, ITicketApprovalService approval, CancellationToken ct) =>
+{
+    var result = await approval.ApproveAsync(id, body?.EditedDraft, ct);
+    return result is null ? Results.NotFound(new { error = $"Ticket {id} was not found." }) : Results.Ok(result);
+});
+
+// Human-in-the-loop: reject the pending final action (it is not executed).
+app.MapPost("/api/tickets/{id:guid}/reject", async (
+    Guid id, RejectRequest? body, ITicketApprovalService approval, CancellationToken ct) =>
+{
+    var result = await approval.RejectAsync(id, body?.Reason, ct);
+    return result is null ? Results.NotFound(new { error = $"Ticket {id} was not found." }) : Results.Ok(result);
+});
+
 app.Run();
+
+internal sealed record ApproveRequest(string? EditedDraft);
+internal sealed record RejectRequest(string? Reason);

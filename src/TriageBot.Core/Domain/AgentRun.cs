@@ -22,6 +22,15 @@ public class AgentRun
     /// <summary>Short human-readable summary of how the run ended.</summary>
     public string? Outcome { get; set; }
 
+    /// <summary>
+    /// When the agent paused for human approval, the final tool it proposed (e.g. "save_ticket_result").
+    /// Null once there is no action awaiting approval (never proposed, or already approved/rejected).
+    /// </summary>
+    public string? PendingToolName { get; set; }
+
+    /// <summary>JSON arguments of the proposed final action, captured so it can be executed on approval.</summary>
+    public string? PendingArgumentsJson { get; set; }
+
     /// <summary>Ordered trace of tool calls and reasoning for this run.</summary>
     public ICollection<AgentStep> Steps { get; set; } = new List<AgentStep>();
 }
