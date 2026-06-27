@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using TriageBot.Core.Abstractions;
 using TriageBot.Core.Enums;
 using TriageBot.Infrastructure;
 using TriageBot.Infrastructure.Ai;
@@ -62,6 +63,27 @@ app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, Ca
                 provider = selected.ToString(),
                 error = $"Could not reach the {selected} AI provider. Is it running and reachable? ({ex.Message})"
             },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+// Run the triage agent over a ticket. T5: executes immediately (no approval gate yet — added in T6).
+app.MapPost("/api/tickets/{id:guid}/process", async (
+    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await triage.ProcessTicketAsync(id, ct);
+        return result is null
+            ? Results.NotFound(new { error = $"Ticket {id} was not found." })
+            : Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        loggerFactory.CreateLogger("TicketProcessing")
+            .LogError(ex, "Triage run failed for ticket {TicketId}.", id);
+        return Results.Json(
+            new { ticketId = id, error = $"The triage agent could not complete. Is the AI provider running? ({ex.Message})" },
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });

@@ -25,10 +25,12 @@ public static class DependencyInjection
         // Runtime-switchable LLM providers (Local/Ollama default, Gemini optional).
         services.AddAiProviders(configuration);
 
-        // Tools
-        services.AddSingleton<KeywordClassifierTool>();
+        // Core triage agent (Microsoft Agent Framework) + orchestration service.
+        services.AddScoped<TicketTriageAgent>();
+        services.AddScoped<ITicketTriageService, TicketTriageService>();
 
-        // Services (placeholder implementations — swapped for LLM later)
+        // Heuristic placeholders kept for reference / tests.
+        services.AddSingleton<KeywordClassifierTool>();
         services.AddScoped<ITriageService, HeuristicTriageService>();
         services.AddSingleton<ITicketRepository, InMemoryTicketRepository>();
 
