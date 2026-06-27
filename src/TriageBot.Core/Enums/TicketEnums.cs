@@ -3,19 +3,18 @@ namespace TriageBot.Core.Enums;
 /// <summary>Functional area a ticket belongs to. Drives routing and escalation rules.</summary>
 public enum TicketCategory
 {
-    Unknown = 0,
-    Hardware,
-    Software,
+    AccountAccess,
     Network,
-    Account,
-    Security,
+    Software,
+    Hardware,
+    Email,
     Other
 }
 
-/// <summary>Business urgency of a ticket. Set by the agent, may be overridden by a human.</summary>
-public enum TicketPriority
+/// <summary>How urgently a ticket needs attention. Set by the agent, may be overridden by a human.</summary>
+public enum TicketUrgency
 {
-    Low = 0,
+    Low,
     Medium,
     High,
     Critical
@@ -24,18 +23,10 @@ public enum TicketPriority
 /// <summary>Lifecycle of a ticket as it moves through the triage workflow.</summary>
 public enum TicketStatus
 {
-    New = 0,
-    Triaged,
+    New,
+    Processing,
     AwaitingApproval,
-    Replied,
+    Resolved,
     Escalated,
-    Closed
-}
-
-/// <summary>Outcome of the human approval gate before any final action is taken.</summary>
-public enum ApprovalDecision
-{
-    Pending = 0,
-    Approved,
     Rejected
 }

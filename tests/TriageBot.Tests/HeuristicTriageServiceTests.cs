@@ -17,14 +17,14 @@ public class HeuristicTriageServiceTests
 
         var result = await _sut.TriageAsync(ticket);
 
-        Assert.Equal(TicketCategory.Account, result.Category);
+        Assert.Equal(TicketCategory.AccountAccess, result.Category);
         Assert.False(string.IsNullOrWhiteSpace(result.DraftReply));
     }
 
     [Fact]
-    public async Task Escalates_security_tickets()
+    public async Task Escalates_critical_tickets()
     {
-        var ticket = new Ticket { Subject = "Phishing email", Body = "Suspicious malware link reported." };
+        var ticket = new Ticket { Subject = "Production outage", Body = "The billing system is down for all users." };
 
         var result = await _sut.TriageAsync(ticket);
 

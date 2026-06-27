@@ -8,25 +8,25 @@ namespace TriageBot.Infrastructure.Tools;
 /// Placeholder classifier: a deterministic, keyword-based heuristic used as a stand-in
 /// until the LLM-backed classifier is wired in. Being deterministic, it is trivially unit testable.
 /// </summary>
-public sealed class KeywordClassifierTool : IAgentTool<Ticket, (TicketCategory Category, TicketPriority Priority)>
+public sealed class KeywordClassifierTool : IAgentTool<Ticket, (TicketCategory Category, TicketUrgency Urgency)>
 {
     public string Name => "keyword_classifier";
 
-    public string Description => "Classifies a ticket into a category and priority using simple keyword heuristics.";
+    public string Description => "Classifies a ticket into a category and urgency using simple keyword heuristics.";
 
     private static readonly Dictionary<TicketCategory, string[]> CategoryKeywords = new()
     {
-        [TicketCategory.Hardware] = ["laptop", "monitor", "keyboard", "printer", "battery", "screen"],
-        [TicketCategory.Software] = ["install", "update", "license", "crash", "bug", "application"],
-        [TicketCategory.Network]  = ["vpn", "wifi", "wi-fi", "internet", "connection", "dns"],
-        [TicketCategory.Account]  = ["password", "login", "locked", "reset", "access", "account"],
-        [TicketCategory.Security] = ["phishing", "malware", "virus", "breach", "suspicious", "ransomware"],
+        [TicketCategory.AccountAccess] = ["password", "login", "log in", "locked", "reset", "access", "account", "mfa", "2fa"],
+        [TicketCategory.Network]       = ["vpn", "wifi", "wi-fi", "internet", "connection", "dns", "network"],
+        [TicketCategory.Email]         = ["email", "outlook", "mailbox", "smtp", "inbox", "sync"],
+        [TicketCategory.Software]      = ["install", "update", "license", "crash", "bug", "application", "app"],
+        [TicketCategory.Hardware]      = ["laptop", "monitor", "keyboard", "printer", "battery", "screen", "mouse"],
     };
 
-    private static readonly string[] CriticalKeywords = ["breach", "ransomware", "outage", "down", "production"];
-    private static readonly string[] HighKeywords = ["urgent", "asap", "locked", "cannot work", "blocked"];
+    private static readonly string[] CriticalKeywords = ["outage", "production", "down for all", "data loss", "breach", "ransomware"];
+    private static readonly string[] HighKeywords = ["urgent", "asap", "locked", "cannot work", "blocked", "down"];
 
-    public Task<(TicketCategory Category, TicketPriority Priority)> ExecuteAsync(
+    public Task<(TicketCategory Category, TicketUrgency Urgency)> ExecuteAsync(
         Ticket input, CancellationToken cancellationToken = default)
     {
         var text = $"{input.Subject} {input.Body}".ToLowerInvariant();
@@ -41,14 +41,14 @@ public sealed class KeywordClassifierTool : IAgentTool<Ticket, (TicketCategory C
             }
         }
 
-        var priority = TicketPriority.Low;
+        var urgency = TicketUrgency.Low;
         if (CriticalKeywords.Any(k => text.Contains(k, StringComparison.Ordinal)))
-            priority = TicketPriority.Critical;
+            urgency = TicketUrgency.Critical;
         else if (HighKeywords.Any(k => text.Contains(k, StringComparison.Ordinal)))
-            priority = TicketPriority.High;
-        else if (category is TicketCategory.Security or TicketCategory.Account)
-            priority = TicketPriority.Medium;
+            urgency = TicketUrgency.High;
+        else if (category is TicketCategory.AccountAccess)
+            urgency = TicketUrgency.Medium;
 
-        return Task.FromResult((category, priority));
+        return Task.FromResult((category, urgency));
     }
 }

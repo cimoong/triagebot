@@ -17,20 +17,20 @@ public sealed class HeuristicTriageService : ITriageService
 
     public async Task<TriageResult> TriageAsync(Ticket ticket, CancellationToken cancellationToken = default)
     {
-        var (category, priority) = await _classifier.ExecuteAsync(ticket, cancellationToken);
+        var (category, urgency) = await _classifier.ExecuteAsync(ticket, cancellationToken);
 
-        var shouldEscalate = priority is TicketPriority.Critical || category is TicketCategory.Security;
+        var shouldEscalate = urgency is TicketUrgency.Critical;
 
         var draft =
             $"Hi,\n\nThanks for reaching out about \"{ticket.Subject}\". " +
-            $"We've logged this as a {category} issue with {priority} priority and a member of the IT team " +
+            $"We've logged this as a {category} issue with {urgency} urgency and a member of the IT team " +
             (shouldEscalate
                 ? "will escalate it for immediate attention."
                 : "will follow up shortly.") +
             "\n\nRegards,\nIT Support";
 
-        var reasoning = $"Classified as {category}/{priority} via keyword heuristics; escalate={shouldEscalate}.";
+        var reasoning = $"Classified as {category}/{urgency} via keyword heuristics; escalate={shouldEscalate}.";
 
-        return new TriageResult(category, priority, draft, shouldEscalate, reasoning);
+        return new TriageResult(category, urgency, draft, shouldEscalate, reasoning);
     }
 }
