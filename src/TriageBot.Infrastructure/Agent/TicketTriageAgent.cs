@@ -39,7 +39,8 @@ public sealed class TicketTriageAgent
         - Keep the reply professional, concise and helpful.
         - Do not invent facts (account names, internal ticket numbers, fixes you cannot know). If key information is
           missing, use draft_reply to ask the requester for the specific details needed, and do NOT resolve the ticket.
-        - Stop once you have classified the ticket, saved a draft reply, and either escalated or finalized it.
+        - The final actions (escalate_to_human, save_ticket_result) only PROPOSE the action: they are queued for a
+          human to approve. After you call one of them, STOP — do not call any more tools.
         """;
 
     /// <summary>

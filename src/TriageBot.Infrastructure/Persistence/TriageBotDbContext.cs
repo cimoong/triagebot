@@ -50,6 +50,7 @@ public class TriageBotDbContext : DbContext
 
             entity.Property(r => r.Provider).IsRequired().HasMaxLength(32);
             entity.Property(r => r.Outcome).HasMaxLength(1000);
+            entity.Property(r => r.PendingToolName).HasMaxLength(100);
 
             entity.HasIndex(r => r.TicketId);
 

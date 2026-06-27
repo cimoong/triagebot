@@ -116,18 +116,73 @@ public sealed class TicketTools : ITicketTools
             $"Ticket {ticketId} escalated to a human. Reason recorded.", cancellationToken);
     }
 
+    /// <summary>Tool names that perform a final, impactful action and therefore require human approval.</summary>
+    public const string SaveTicketResultTool = "save_ticket_result";
+    public const string EscalateToHumanTool = "escalate_to_human";
+
+    [Description("Propose finalizing the ticket with a terminal status such as Resolved. This does NOT take effect immediately: it is queued for human approval. After calling this, stop and wait for the human decision.")]
+    public Task<ToolResult> RequestSaveTicketResultAsync(
+        [Description("The id of the ticket to finalize.")] Guid ticketId,
+        [Description("The terminal status to propose, e.g. Resolved.")] TicketStatus status,
+        CancellationToken cancellationToken = default)
+        => QueueForApprovalAsync(ticketId, SaveTicketResultTool, new { status }, cancellationToken);
+
+    [Description("Propose escalating the ticket to a human agent, with a reason. This does NOT escalate immediately: it is queued for human approval. After calling this, stop and wait for the human decision.")]
+    public Task<ToolResult> RequestEscalateToHumanAsync(
+        [Description("The id of the ticket to escalate.")] Guid ticketId,
+        [Description("Why this ticket needs a human, e.g. critical outage or out-of-policy request.")] string reason,
+        CancellationToken cancellationToken = default)
+        => QueueForApprovalAsync(ticketId, EscalateToHumanTool, new { reason }, cancellationToken);
+
     /// <summary>
     /// Exposes the four tools as <see cref="AIFunction"/>s for an agent's <c>ChatOptions.Tools</c>.
-    /// Names are passed explicitly so the function the model calls matches the logged <see cref="AgentStep.ToolName"/>;
-    /// descriptions come from the <see cref="DescriptionAttribute"/> on each method (description: null below).
+    /// Non-final tools run automatically; the two final actions are the "Request" variants, which queue the
+    /// proposed action for human approval instead of executing it. Names are passed explicitly so the function
+    /// the model calls matches the logged <see cref="AgentStep.ToolName"/>; descriptions come from the
+    /// <see cref="DescriptionAttribute"/> on each method (description: null below).
     /// </summary>
     public IList<AITool> AsAITools() =>
     [
         AIFunctionFactory.Create(RecordClassificationAsync, "record_classification", description: null),
         AIFunctionFactory.Create(DraftReplyAsync, "draft_reply", description: null),
-        AIFunctionFactory.Create(SaveTicketResultAsync, "save_ticket_result", description: null),
-        AIFunctionFactory.Create(EscalateToHumanAsync, "escalate_to_human", description: null)
+        AIFunctionFactory.Create(RequestSaveTicketResultAsync, SaveTicketResultTool, description: null),
+        AIFunctionFactory.Create(RequestEscalateToHumanAsync, EscalateToHumanTool, description: null)
     ];
+
+    /// <summary>
+    /// Human-in-the-loop gate: instead of running a final action, persist it on the run as a pending
+    /// proposal and move the ticket to <see cref="TicketStatus.AwaitingApproval"/>. The approval service
+    /// later executes (or cancels) it. Idempotent within a run — a second proposal is ignored.
+    /// </summary>
+    private async Task<ToolResult> QueueForApprovalAsync(Guid ticketId, string toolName, object arguments, CancellationToken ct)
+    {
+        var ticket = await _db.Tickets.FindAsync([ticketId], ct);
+        if (ticket is null)
+            return await FailAsync(toolName, arguments, $"Ticket {ticketId} was not found. Use a valid ticket id.", ct);
+
+        var run = await _db.AgentRuns.FindAsync([_agentRunId], ct);
+        if (run is { PendingToolName: not null })
+            return ToolResult.Ok($"A '{run.PendingToolName}' action is already awaiting human approval. Stop and wait.");
+
+        if (run is not null)
+        {
+            run.PendingToolName = toolName;
+            run.PendingArgumentsJson = JsonSerializer.Serialize(arguments, JsonOptions);
+        }
+
+        ticket.Status = TicketStatus.AwaitingApproval;
+        ticket.UpdatedAtUtc = DateTime.UtcNow;
+
+        return await LogAndSaveAsync("awaiting_approval", new { tool = toolName, arguments },
+            ToolResult.Ok($"Proposed '{toolName}' has been queued for human approval. Stop now and wait for the decision."), ct);
+    }
+
+    /// <summary>
+    /// Appends a non-tool audit step (reasoning, awaiting-approval marker, approval decision) to this run.
+    /// Used by the orchestration/approval services so every event in a run shows up in <see cref="AgentStep"/>.
+    /// </summary>
+    public Task LogStepAsync(string? toolName, object? arguments, string message, CancellationToken cancellationToken = default)
+        => LogAndSaveAsync(toolName, arguments ?? new { }, ToolResult.Ok(message), cancellationToken);
 
     // --- shared logging / persistence helpers (used by every tool) ---
 
@@ -138,7 +193,7 @@ public sealed class TicketTools : ITicketTools
         => LogAndSaveAsync(toolName, arguments, ToolResult.Fail(message), ct);
 
     /// <summary>Appends exactly one <see cref="AgentStep"/> for the call and persists all pending changes.</summary>
-    private async Task<ToolResult> LogAndSaveAsync(string toolName, object arguments, ToolResult result, CancellationToken ct)
+    private async Task<ToolResult> LogAndSaveAsync(string? toolName, object arguments, ToolResult result, CancellationToken ct)
     {
         var stepIndex = await _db.AgentSteps.CountAsync(s => s.AgentRunId == _agentRunId, ct);
 
