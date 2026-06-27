@@ -7,8 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-// Register triage services, tools and repositories (placeholder implementations for now).
-builder.Services.AddInfrastructure();
+// Register the EF Core DbContext, triage services, tools and repositories.
+builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
 

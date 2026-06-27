@@ -16,16 +16,21 @@ public class Ticket
 
     public string RequesterEmail { get; set; } = string.Empty;
 
-    public TicketCategory Category { get; set; } = TicketCategory.Unknown;
+    /// <summary>Null until the agent has classified the ticket.</summary>
+    public TicketCategory? Category { get; set; }
 
-    public TicketPriority Priority { get; set; } = TicketPriority.Low;
+    /// <summary>Null until the agent has assessed urgency.</summary>
+    public TicketUrgency? Urgency { get; set; }
 
     public TicketStatus Status { get; set; } = TicketStatus.New;
 
     /// <summary>Agent-generated draft reply, awaiting human approval before it is sent.</summary>
     public string? DraftReply { get; set; }
 
-    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
-    public DateTimeOffset? UpdatedAt { get; set; }
+    public DateTime? UpdatedAtUtc { get; set; }
+
+    /// <summary>Agent executions that have processed this ticket (most recent triage attempts).</summary>
+    public ICollection<AgentRun> AgentRuns { get; set; } = new List<AgentRun>();
 }

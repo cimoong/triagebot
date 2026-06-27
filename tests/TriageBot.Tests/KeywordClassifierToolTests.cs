@@ -20,14 +20,14 @@ public class KeywordClassifierToolTests
     }
 
     [Fact]
-    public async Task Flags_security_breach_as_critical()
+    public async Task Flags_production_outage_as_critical()
     {
-        var ticket = new Ticket { Subject = "Possible breach", Body = "Ransomware detected on a production server." };
+        var ticket = new Ticket { Subject = "URGENT: production app down", Body = "The order app is down for all users." };
 
-        var (category, priority) = await _sut.ExecuteAsync(ticket);
+        var (category, urgency) = await _sut.ExecuteAsync(ticket);
 
-        Assert.Equal(TicketCategory.Security, category);
-        Assert.Equal(TicketPriority.Critical, priority);
+        Assert.Equal(TicketCategory.Software, category);
+        Assert.Equal(TicketUrgency.Critical, urgency);
     }
 
     [Fact]
@@ -35,9 +35,9 @@ public class KeywordClassifierToolTests
     {
         var ticket = new Ticket { Subject = "Hello", Body = "Just saying hi." };
 
-        var (category, priority) = await _sut.ExecuteAsync(ticket);
+        var (category, urgency) = await _sut.ExecuteAsync(ticket);
 
         Assert.Equal(TicketCategory.Other, category);
-        Assert.Equal(TicketPriority.Low, priority);
+        Assert.Equal(TicketUrgency.Low, urgency);
     }
 }

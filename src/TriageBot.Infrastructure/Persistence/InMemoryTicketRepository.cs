@@ -16,7 +16,7 @@ public sealed class InMemoryTicketRepository : ITicketRepository
         => Task.FromResult(_store.GetValueOrDefault(id));
 
     public Task<IReadOnlyList<Ticket>> GetAllAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult((IReadOnlyList<Ticket>)_store.Values.OrderByDescending(t => t.CreatedAt).ToList());
+        => Task.FromResult((IReadOnlyList<Ticket>)_store.Values.OrderByDescending(t => t.CreatedAtUtc).ToList());
 
     public Task AddAsync(Ticket ticket, CancellationToken cancellationToken = default)
     {
@@ -26,7 +26,7 @@ public sealed class InMemoryTicketRepository : ITicketRepository
 
     public Task UpdateAsync(Ticket ticket, CancellationToken cancellationToken = default)
     {
-        ticket.UpdatedAt = DateTimeOffset.UtcNow;
+        ticket.UpdatedAtUtc = DateTime.UtcNow;
         _store[ticket.Id] = ticket;
         return Task.CompletedTask;
     }

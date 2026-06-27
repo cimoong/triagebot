@@ -35,10 +35,14 @@ A local PostgreSQL instance is provided via `docker-compose.yml`.
 
 | Setting   | Value       |
 | --------- | ----------- |
-| Host/Port | `localhost:5432` |
+| Host/Port | `localhost:5433` (mapped to the container's 5432) |
 | Database  | `triagebot` |
 | User      | `postgres`  |
 | Password  | `postgres`  |
+
+> Host port **5433** is used to avoid clashing with a native PostgreSQL install that may already
+> own 5432. Change the published port in `docker-compose.yml` and the `TriageBotDb` connection
+> string together if you prefer a different one.
 
 ```bash
 # Start the database in the background
@@ -57,12 +61,19 @@ docker compose down
 docker compose down -v
 ```
 
-Connection string (for later EF Core wiring):
+Connection string (configured in `src/TriageBot.Web/appsettings.json` under `ConnectionStrings:TriageBotDb`):
 
 ```
-Host=localhost;Port=5432;Database=triagebot;Username=postgres;Password=postgres
+Host=localhost;Port=5433;Database=triagebot;Username=postgres;Password=postgres
+```
+
+### Apply EF Core migrations
+
+```bash
+# Create the schema and seed sample tickets
+dotnet ef database update --project src/TriageBot.Infrastructure --startup-project src/TriageBot.Web
 ```
 
 > Note: AI/LLM and agent-runtime dependencies are intentionally not wired in yet.
 > The current `Infrastructure` layer ships deterministic placeholder implementations
-> (keyword classifier, in-memory repository) so the workflow runs end-to-end today.
+> (keyword classifier, in-memory repository) alongside the EF Core data layer.

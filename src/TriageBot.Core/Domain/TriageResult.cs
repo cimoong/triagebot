@@ -8,7 +8,7 @@ namespace TriageBot.Core.Domain;
 /// </summary>
 public sealed record TriageResult(
     TicketCategory Category,
-    TicketPriority Priority,
+    TicketUrgency Urgency,
     string DraftReply,
     bool ShouldEscalate,
     string Reasoning);
