@@ -45,6 +45,9 @@ appsettings.Local.json
 *.p12
 *.key
 
+# Claude Code runtime artifacts
+.claude/scheduled_tasks.lock
+
 # User-specific & OS files
 *.DotSettings.user
 Thumbs.db

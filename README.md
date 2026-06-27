@@ -74,6 +74,19 @@ Host=localhost;Port=5433;Database=triagebot;Username=postgres;Password=postgres
 dotnet ef database update --project src/TriageBot.Infrastructure --startup-project src/TriageBot.Web
 ```
 
-> Note: AI/LLM and agent-runtime dependencies are intentionally not wired in yet.
-> The current `Infrastructure` layer ships deterministic placeholder implementations
-> (keyword classifier, in-memory repository) alongside the EF Core data layer.
+## Triage agent
+
+The agent (Microsoft Agent Framework) classifies a ticket, drafts a reply, then escalates or
+finalizes it — driving the ticket tools through automatic function invocation. Trigger a run:
+
+```bash
+curl -X POST http://localhost:5227/api/tickets/{ticketId}/process
+```
+
+Each run is recorded as an `AgentRun` with one `AgentStep` per tool call (inspect the `AgentSteps`
+table for the full trace). The active LLM provider (Local/Gemini) is switchable per session.
+
+> **Local model note:** the default local model is `qwen3:8b`, a reasoning model whose "thinking"
+> mode is very slow on CPU. The agent appends `/no_think` to local prompts to disable it. If runs are
+> still too slow, set `LocalAi:ChatModel` to a lighter tool-capable model such as `llama3.2:3b`
+> (note: smaller models are less reliable at emitting well-formed tool calls).

@@ -18,6 +18,9 @@ public static class AiServiceCollectionExtensions
     private const string LocalHttpClient = "ai-local";
     private const string GeminiHttpClient = "ai-gemini";
 
+    /// <summary>Hard cap on the agent's tool-calling loop so a confused model can't loop forever.</summary>
+    private const int MaxToolIterations = 10;
+
     public static IServiceCollection AddAiProviders(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.Section));
@@ -40,7 +43,7 @@ public static class AiServiceCollectionExtensions
                 var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient(LocalHttpClient);
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
-            .UseFunctionInvocation() // ready for tool calling (qwen3:8b supports it)
+            .UseFunctionInvocation(configure: f => f.MaximumIterationsPerRequest = MaxToolIterations)
             .UseLogging();
 
         // Keyed chat client: Gemini (optional). Fails with a clear message only when actually used without a key.
