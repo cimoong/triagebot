@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TriageBot.Core.Abstractions;
 using TriageBot.Infrastructure.Agent;
+using TriageBot.Infrastructure.Ai;
 using TriageBot.Infrastructure.Persistence;
 using TriageBot.Infrastructure.Tools;
 
@@ -20,6 +21,9 @@ public static class DependencyInjection
             ?? throw new InvalidOperationException("Connection string 'TriageBotDb' was not found.");
 
         services.AddDbContext<TriageBotDbContext>(options => options.UseNpgsql(connectionString));
+
+        // Runtime-switchable LLM providers (Local/Ollama default, Gemini optional).
+        services.AddAiProviders(configuration);
 
         // Tools
         services.AddSingleton<KeywordClassifierTool>();
