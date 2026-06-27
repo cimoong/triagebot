@@ -29,6 +29,40 @@ dotnet test
 dotnet run --project src/TriageBot.Web
 ```
 
-> Note: AI/LLM, database, and agent-runtime dependencies are intentionally not wired in yet.
+## Database (Docker)
+
+A local PostgreSQL instance is provided via `docker-compose.yml`.
+
+| Setting   | Value       |
+| --------- | ----------- |
+| Host/Port | `localhost:5432` |
+| Database  | `triagebot` |
+| User      | `postgres`  |
+| Password  | `postgres`  |
+
+```bash
+# Start the database in the background
+docker compose up -d
+
+# Check status / wait for the "healthy" state
+docker compose ps
+
+# Tail the logs
+docker compose logs -f db
+
+# Stop the container (keeps data in the named volume)
+docker compose down
+
+# Stop and DELETE all data (drops the named volume)
+docker compose down -v
+```
+
+Connection string (for later EF Core wiring):
+
+```
+Host=localhost;Port=5432;Database=triagebot;Username=postgres;Password=postgres
+```
+
+> Note: AI/LLM and agent-runtime dependencies are intentionally not wired in yet.
 > The current `Infrastructure` layer ships deterministic placeholder implementations
 > (keyword classifier, in-memory repository) so the workflow runs end-to-end today.

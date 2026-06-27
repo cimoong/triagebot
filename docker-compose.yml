@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:17.5
+    container_name: triagebot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: triagebot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - triagebot-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d triagebot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  triagebot-pgdata:
