@@ -1,4 +1,7 @@
+using Microsoft.Extensions.AI;
+using TriageBot.Core.Enums;
 using TriageBot.Infrastructure;
+using TriageBot.Infrastructure.Ai;
 using TriageBot.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,5 +30,40 @@ app.UseAntiforgery();
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
+
+// Quick connectivity probe for either LLM provider:
+//   GET /health/ai?provider=local|gemini   (defaults to the session's active provider)
+app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, CancellationToken ct) =>
+{
+    AiProvider selected;
+    if (string.IsNullOrWhiteSpace(provider))
+        selected = resolver.ActiveProvider;
+    else if (!Enum.TryParse(provider, ignoreCase: true, out selected))
+        return Results.BadRequest(new { error = $"Unknown provider '{provider}'. Use 'local' or 'gemini'." });
+
+    try
+    {
+        var client = resolver.GetChatClient(selected);
+        var response = await client.GetResponseAsync("reply with the word OK", cancellationToken: ct);
+        return Results.Ok(new { provider = selected.ToString(), reply = response.Text });
+    }
+    catch (InvalidOperationException ex)
+    {
+        // e.g. Gemini selected without an API key — a configuration problem, not an outage.
+        return Results.Json(new { provider = selected.ToString(), error = ex.Message },
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+    catch (Exception ex)
+    {
+        // e.g. Ollama not running / Gemini unreachable.
+        return Results.Json(
+            new
+            {
+                provider = selected.ToString(),
+                error = $"Could not reach the {selected} AI provider. Is it running and reachable? ({ex.Message})"
+            },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 
 app.Run();
