@@ -1,0 +1,78 @@
+@rendermode InteractiveServer
+@implements IDisposable
+@inject AiProviderState ProviderState
+@inject IOptions<LocalAiOptions> LocalOptions
+@inject IOptions<GeminiOptions> GeminiOptions
+@inject IHttpClientFactory HttpClientFactory
+
+<div class="d-flex align-items-center gap-2">
+    <label class="text-light small mb-0">Provider</label>
+    <select class="form-select form-select-sm" style="width:auto" value="@ProviderState.Current" @onchange="OnProviderChanged">
+        <option value="@AiProvider.Local">Local (Ollama)</option>
+        <option value="@AiProvider.Gemini">Gemini (cloud)</option>
+    </select>
+
+    <span class="badge bg-dark border">
+        @if (ProviderState.Current == AiProvider.Local)
+        {
+            <span>Local: @LocalOptions.Value.ChatModel</span>
+        }
+        else
+        {
+            <span>Gemini: @GeminiOptions.Value.ChatModel</span>
+        }
+    </span>
+
+    @if (ProviderState.Current == AiProvider.Local)
+    {
+        <span class="small text-light" title="@_ollamaTitle">
+            <span class="badge rounded-pill @(_ollamaOnline == true ? "bg-success" : _ollamaOnline == false ? "bg-danger" : "bg-secondary")">●</span>
+            @(_ollamaOnline == true ? "Ollama online" : _ollamaOnline == false ? "Ollama offline" : "checking…")
+        </span>
+    }
+</div>
+
+@code {
+    private bool? _ollamaOnline;
+    private string? _ollamaTitle;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ProviderState.Changed += OnStateChanged;
+        if (ProviderState.Current == AiProvider.Local)
+            await CheckOllamaAsync();
+    }
+
+    private async Task OnProviderChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<AiProvider>(e.Value?.ToString(), out var provider))
+        {
+            ProviderState.Current = provider;
+            _ollamaOnline = null;
+            if (provider == AiProvider.Local)
+                await CheckOllamaAsync();
+        }
+    }
+
+    private async Task CheckOllamaAsync()
+    {
+        var url = LocalOptions.Value.Endpoint.TrimEnd('/') + "/models";
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var client = HttpClientFactory.CreateClient();
+            using var response = await client.GetAsync(url, cts.Token);
+            _ollamaOnline = response.IsSuccessStatusCode;
+            _ollamaTitle = $"GET {url} -> {(int)response.StatusCode}";
+        }
+        catch (Exception ex)
+        {
+            _ollamaOnline = false;
+            _ollamaTitle = $"GET {url} failed: {ex.Message}";
+        }
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => ProviderState.Changed -= OnStateChanged;
+}
