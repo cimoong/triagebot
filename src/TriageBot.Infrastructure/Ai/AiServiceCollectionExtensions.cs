@@ -3,8 +3,10 @@ using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 using OpenAI;
+using Polly;
 using TriageBot.Core.Enums;
 
 namespace TriageBot.Infrastructure.Ai;
@@ -29,12 +31,14 @@ public static class AiServiceCollectionExtensions
 
         // Named HttpClients let us give local inference a generous timeout (slow CPU).
         services.AddHttpClient(LocalHttpClient, (sp, http) =>
-            http.Timeout = TimeSpan.FromSeconds(
-                sp.GetRequiredService<IOptions<LocalAiOptions>>().Value.TimeoutSeconds));
+                http.Timeout = TimeSpan.FromSeconds(
+                    sp.GetRequiredService<IOptions<LocalAiOptions>>().Value.TimeoutSeconds))
+            .AddLlmResilience();
 
         services.AddHttpClient(GeminiHttpClient, (sp, http) =>
-            http.Timeout = TimeSpan.FromSeconds(
-                sp.GetRequiredService<IOptions<GeminiOptions>>().Value.TimeoutSeconds));
+                http.Timeout = TimeSpan.FromSeconds(
+                    sp.GetRequiredService<IOptions<GeminiOptions>>().Value.TimeoutSeconds))
+            .AddLlmResilience();
 
         // Keyed chat client: Local (Ollama). No API key needed; "ollama" is a placeholder credential.
         services.AddKeyedChatClient(AiClientResolver.KeyFor(AiProvider.Local), sp =>
@@ -90,4 +94,21 @@ public static class AiServiceCollectionExtensions
             .GetChatClient(model)
             .AsIChatClient();
     }
+
+    /// <summary>
+    /// Adds a retry-only resilience handler for transient failures (connection refused, 5xx, 408/429,
+    /// <see cref="HttpRequestException"/>). It deliberately does NOT add a pipeline timeout: the per-request
+    /// timeout is already governed by <see cref="HttpClient.Timeout"/> (generous for slow local inference),
+    /// and the default predicate does not retry that cancellation — so a legitimately slow generation runs to
+    /// completion instead of triggering a retry storm, while a momentarily unavailable provider is retried.
+    /// </summary>
+    private static void AddLlmResilience(this IHttpClientBuilder builder) =>
+        builder.AddResilienceHandler("llm-retry", pipeline =>
+            pipeline.AddRetry(new HttpRetryStrategyOptions
+            {
+                MaxRetryAttempts = 2,
+                Delay = TimeSpan.FromSeconds(1),
+                BackoffType = DelayBackoffType.Exponential,
+                UseJitter = true
+            }));
 }

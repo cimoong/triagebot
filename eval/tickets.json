@@ -1,0 +1,58 @@
+[
+  {
+    "subject": "Entire office has no internet",
+    "body": "Since 9am nobody on the 3rd floor can reach the internet or internal systems. The switch lights look normal but no device gets an IP. This is blocking the whole sales team ahead of a noon deadline.",
+    "requesterEmail": "ops.lead@contoso.com",
+    "expectedCategory": "Network",
+    "expectedUrgency": "Critical",
+    "shouldEscalate": true
+  },
+  {
+    "subject": "Forgot my password and now locked out",
+    "body": "I mistyped my password too many times and my account is locked. I can still wait, but I'd like to get back in sometime today to finish a report.",
+    "requesterEmail": "j.rivera@contoso.com",
+    "expectedCategory": "AccountAccess",
+    "expectedUrgency": "Medium",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "Outlook not receiving new emails",
+    "body": "My Outlook stopped pulling in new messages since yesterday afternoon. Send works fine and webmail shows the messages, so it seems specific to my desktop client.",
+    "requesterEmail": "p.nguyen@contoso.com",
+    "expectedCategory": "Email",
+    "expectedUrgency": "Medium",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "Laptop will not turn on",
+    "body": "My work laptop is completely dead this morning. No lights when I press power, tried a different charger and wall socket. I have a backup machine for now but need this fixed.",
+    "requesterEmail": "s.kapoor@contoso.com",
+    "expectedCategory": "Hardware",
+    "expectedUrgency": "High",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "Please install Adobe Photoshop",
+    "body": "When you have a chance, could you install Photoshop on my workstation? It's for an upcoming marketing project next month, no rush at all.",
+    "requesterEmail": "m.olsen@contoso.com",
+    "expectedCategory": "Software",
+    "expectedUrgency": "Low",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "VPN keeps disconnecting when working from home",
+    "body": "The corporate VPN drops every few minutes from my home network, then reconnects. Other sites work fine. It's slowing me down but I can still work in short bursts.",
+    "requesterEmail": "a.flores@contoso.com",
+    "expectedCategory": "Network",
+    "expectedUrgency": "Medium",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "Suspicious ransom note on the file server",
+    "body": "Several shared files now have a .locked extension and there is a README.txt demanding payment in cryptocurrency. People are reporting they cannot open documents. I think we may be under a ransomware attack.",
+    "requesterEmail": "it.duty@contoso.com",
+    "expectedCategory": "Other",
+    "expectedUrgency": "Critical",
+    "shouldEscalate": true
+  }
+]
