@@ -29,15 +29,18 @@
                 <DataAnnotationsValidator />
                 <div class="mb-2">
                     <label class="form-label">Subject</label>
-                    <input class="form-control" @bind="_newTicket.Subject" />
+                    <InputText class="form-control" @bind-Value="_newTicket.Subject" />
+                    <ValidationMessage For="() => _newTicket.Subject" class="text-danger small" />
                 </div>
                 <div class="mb-2">
                     <label class="form-label">Body</label>
-                    <textarea class="form-control" rows="3" @bind="_newTicket.Body"></textarea>
+                    <InputTextArea class="form-control" rows="3" @bind-Value="_newTicket.Body" />
+                    <ValidationMessage For="() => _newTicket.Body" class="text-danger small" />
                 </div>
                 <div class="mb-2">
                     <label class="form-label">Requester email</label>
-                    <input class="form-control" @bind="_newTicket.RequesterEmail" />
+                    <InputText class="form-control" @bind-Value="_newTicket.RequesterEmail" />
+                    <ValidationMessage For="() => _newTicket.RequesterEmail" class="text-danger small" />
                 </div>
                 <button type="submit" class="btn btn-success" disabled="@_saving">Save ticket</button>
             </EditForm>
@@ -150,13 +153,7 @@ else
 
     private async Task AddTicketAsync()
     {
-        if (string.IsNullOrWhiteSpace(_newTicket.Subject) || string.IsNullOrWhiteSpace(_newTicket.Body)
-            || string.IsNullOrWhiteSpace(_newTicket.RequesterEmail))
-        {
-            _error = "Subject, body and requester email are all required.";
-            return;
-        }
-
+        // OnValidSubmit only fires once DataAnnotations pass, so inputs are already validated here.
         _saving = true;
         _error = null;
         try
@@ -191,6 +188,10 @@ else
             await Triage.ProcessTicketAsync(id);
             Nav.NavigateTo($"/tickets/{id}");
         }
+        catch (TriageRunException ex)
+        {
+            _error = ex.Message;
+        }
         catch (Exception ex)
         {
             _error = $"The triage agent could not complete. Is the selected AI provider running? ({ex.Message})";
@@ -203,8 +204,13 @@ else
 
     private sealed class NewTicket
     {
+        [Required, StringLength(200, MinimumLength = 3, ErrorMessage = "Subject must be 3–200 characters.")]
         public string Subject { get; set; } = "";
+
+        [Required, StringLength(5000, MinimumLength = 5, ErrorMessage = "Body must be 5–5000 characters.")]
         public string Body { get; set; } = "";
+
+        [Required, EmailAddress, StringLength(254, ErrorMessage = "Email is too long.")]
         public string RequesterEmail { get; set; } = "";
     }
 }

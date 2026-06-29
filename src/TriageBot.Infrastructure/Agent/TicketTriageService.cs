@@ -68,7 +68,19 @@ public sealed class TicketTriageService : ITicketTriageService
         // 2. Run the agent. Non-final tools execute (and self-log). A final-action tool does NOT execute:
         //    it queues a pending proposal on the run and moves the ticket to AwaitingApproval, then the agent stops.
         var tools = new TicketTools(_db, run.Id);
-        var response = await _agent.RunAsync(ticket, provider, tools.AsAITools(), cancellationToken);
+        AgentResponse response;
+        try
+        {
+            response = await _agent.RunAsync(ticket, provider, tools.AsAITools(), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // The provider is unreachable/timed out, or a tool threw unexpectedly. Fail the run cleanly:
+            // record it, leave a visible audit step, and don't strand the ticket in Processing.
+            await FailRunAsync(run, ticket, tools, ex, cancellationToken);
+            throw new TriageRunException(
+                $"The triage agent could not complete. Is the '{provider}' AI provider running and reachable?", ex);
+        }
 
         var awaitingApproval = run.PendingToolName is not null; // set by the final-action tool during the run
         if (awaitingApproval)
@@ -130,6 +142,44 @@ public sealed class TicketTriageService : ITicketTriageService
         await _db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// Records a failed run without throwing further: appends an error <see cref="AgentStep"/>, marks the run
+    /// completed with a failure outcome, and rolls a still-Processing ticket back to New so it can be retried.
+    /// </summary>
+    private async Task FailRunAsync(AgentRun run, Ticket ticket, TicketTools tools, Exception ex, CancellationToken ct)
+    {
+        _logger.LogError(ex, "Triage run {RunId} for ticket {TicketId} failed: {Message}", run.Id, ticket.Id, ex.Message);
+
+        try
+        {
+            await tools.LogStepAsync("run_failed", new { error = ex.Message },
+                $"The triage run failed: {ex.Message}", ct);
+
+            run.Outcome = Truncate($"Failed: {ex.Message}", 1000);
+            run.CompletedAtUtc = DateTime.UtcNow;
+
+            // Don't leave the ticket stuck in Processing; allow another attempt.
+            if (ticket.Status == Core.Enums.TicketStatus.Processing)
+            {
+                ticket.Status = Core.Enums.TicketStatus.New;
+                ticket.UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception persistEx)
+        {
+            // Persisting the failure must never mask the original error.
+            _logger.LogError(persistEx, "Could not persist the failure of run {RunId}.", run.Id);
+        }
+    }
+
     private static string Truncate(string value, int max) =>
         value.Length <= max ? value : value[..max];
+}
+
+/// <summary>Raised when a triage run cannot complete (e.g. the AI provider is unreachable). Carries a user-safe message.</summary>
+public sealed class TriageRunException : Exception
+{
+    public TriageRunException(string message, Exception innerException) : base(message, innerException) { }
 }

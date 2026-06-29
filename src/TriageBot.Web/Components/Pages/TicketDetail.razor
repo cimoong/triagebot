@@ -213,6 +213,11 @@ else
             await Triage.ProcessTicketAsync(Id);
             await ReloadAsync();
         }
+        catch (TriageRunException ex)
+        {
+            _error = ex.Message;
+            await ReloadAsync(); // show the recorded failure step in the timeline
+        }
         catch (Exception ex)
         {
             _error = $"The triage agent could not complete. Is the selected AI provider running? ({ex.Message})";

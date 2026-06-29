@@ -14,6 +14,9 @@ builder.Services.AddRazorComponents()
 // Register the EF Core DbContext, triage services, tools and repositories.
 builder.Services.AddInfrastructure(builder.Configuration);
 
+// RFC 7807 ProblemDetails for unhandled errors, so the API never leaks a stack trace.
+builder.Services.AddProblemDetails();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -23,6 +26,8 @@ if (!app.Environment.IsDevelopment())
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
+// Convert unhandled exceptions on non-Razor (API) routes into RFC 7807 responses (no stack trace leaked).
+app.UseStatusCodePages();
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
 
