@@ -1,0 +1,210 @@
+@page "/tickets"
+@rendermode InteractiveServer
+@inject TriageBotDbContext Db
+@inject ITicketTriageService Triage
+@inject NavigationManager Nav
+
+<PageTitle>Tickets</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Tickets</h1>
+    <button class="btn btn-primary" @onclick="() => _showAddForm = !_showAddForm">
+        @(_showAddForm ? "Close" : "Add ticket")
+    </button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger alert-dismissible">
+        @_error
+        <button type="button" class="btn-close" @onclick="() => _error = null"></button>
+    </div>
+}
+
+@if (_showAddForm)
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <EditForm Model="_newTicket" OnValidSubmit="AddTicketAsync">
+                <DataAnnotationsValidator />
+                <div class="mb-2">
+                    <label class="form-label">Subject</label>
+                    <input class="form-control" @bind="_newTicket.Subject" />
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Body</label>
+                    <textarea class="form-control" rows="3" @bind="_newTicket.Body"></textarea>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Requester email</label>
+                    <input class="form-control" @bind="_newTicket.RequesterEmail" />
+                </div>
+                <button type="submit" class="btn btn-success" disabled="@_saving">Save ticket</button>
+            </EditForm>
+        </div>
+    </div>
+}
+
+<div class="d-flex gap-3 mb-3">
+    <div>
+        <label class="form-label small mb-0">Status</label>
+        <select class="form-select form-select-sm" @bind="_statusFilter">
+            <option value="">All</option>
+            @foreach (var s in Enum.GetValues<TicketStatus>())
+            {
+                <option value="@s">@s</option>
+            }
+        </select>
+    </div>
+    <div>
+        <label class="form-label small mb-0">Urgency</label>
+        <select class="form-select form-select-sm" @bind="_urgencyFilter">
+            <option value="">All</option>
+            @foreach (var u in Enum.GetValues<TicketUrgency>())
+            {
+                <option value="@u">@u</option>
+            }
+        </select>
+    </div>
+</div>
+
+@if (_tickets is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <table class="table table-hover align-middle">
+        <thead>
+            <tr>
+                <th>Subject</th>
+                <th>Category</th>
+                <th>Urgency</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th class="text-end">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var t in Filtered())
+            {
+                <tr>
+                    <td><a href="/tickets/@t.Id">@t.Subject</a></td>
+                    <td><span class="badge @UiBadges.Category(t.Category)">@(t.Category?.ToString() ?? "—")</span></td>
+                    <td><span class="badge @UiBadges.Urgency(t.Urgency)">@(t.Urgency?.ToString() ?? "—")</span></td>
+                    <td><span class="badge @UiBadges.Status(t.Status)">@t.Status</span></td>
+                    <td class="small text-muted">@t.CreatedAtUtc.ToLocalTime().ToString("g")</td>
+                    <td class="text-end">
+                        <a class="btn btn-sm btn-outline-secondary" href="/tickets/@t.Id">Open</a>
+                        <button class="btn btn-sm btn-outline-primary" disabled="@(_processingId == t.Id)"
+                                @onclick="() => ProcessAsync(t.Id)">
+                            @if (_processingId == t.Id)
+                            {
+                                <span class="spinner-border spinner-border-sm"></span>
+                                <span>Processing…</span>
+                            }
+                            else
+                            {
+                                <span>Process with agent</span>
+                            }
+                        </button>
+                    </td>
+                </tr>
+            }
+            @if (!Filtered().Any())
+            {
+                <tr><td colspan="6" class="text-center text-muted">No tickets match the filter.</td></tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<Ticket>? _tickets;
+    private bool _showAddForm;
+    private bool _saving;
+    private string? _error;
+    private Guid? _processingId;
+    private string _statusFilter = "";
+    private string _urgencyFilter = "";
+    private readonly NewTicket _newTicket = new();
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _tickets = await Db.Tickets.AsNoTracking()
+            .OrderByDescending(t => t.CreatedAtUtc)
+            .ToListAsync();
+    }
+
+    private IEnumerable<Ticket> Filtered()
+    {
+        IEnumerable<Ticket> q = _tickets ?? Enumerable.Empty<Ticket>();
+        if (Enum.TryParse<TicketStatus>(_statusFilter, out var s))
+            q = q.Where(t => t.Status == s);
+        if (Enum.TryParse<TicketUrgency>(_urgencyFilter, out var u))
+            q = q.Where(t => t.Urgency == u);
+        return q;
+    }
+
+    private async Task AddTicketAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newTicket.Subject) || string.IsNullOrWhiteSpace(_newTicket.Body)
+            || string.IsNullOrWhiteSpace(_newTicket.RequesterEmail))
+        {
+            _error = "Subject, body and requester email are all required.";
+            return;
+        }
+
+        _saving = true;
+        _error = null;
+        try
+        {
+            Db.Tickets.Add(new Ticket
+            {
+                Subject = _newTicket.Subject.Trim(),
+                Body = _newTicket.Body.Trim(),
+                RequesterEmail = _newTicket.RequesterEmail.Trim()
+            });
+            await Db.SaveChangesAsync();
+            _newTicket.Subject = _newTicket.Body = _newTicket.RequesterEmail = "";
+            _showAddForm = false;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not save the ticket: {ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ProcessAsync(Guid id)
+    {
+        _processingId = id;
+        _error = null;
+        try
+        {
+            await Triage.ProcessTicketAsync(id);
+            Nav.NavigateTo($"/tickets/{id}");
+        }
+        catch (Exception ex)
+        {
+            _error = $"The triage agent could not complete. Is the selected AI provider running? ({ex.Message})";
+        }
+        finally
+        {
+            _processingId = null;
+        }
+    }
+
+    private sealed class NewTicket
+    {
+        public string Subject { get; set; } = "";
+        public string Body { get; set; } = "";
+        public string RequesterEmail { get; set; } = "";
+    }
+}

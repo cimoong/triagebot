@@ -1,0 +1,267 @@
+@page "/tickets/{Id:guid}"
+@rendermode InteractiveServer
+@using System.Text.Json
+@inject TriageBotDbContext Db
+@inject ITicketTriageService Triage
+@inject ITicketApprovalService Approval
+@inject NavigationManager Nav
+
+<PageTitle>Ticket</PageTitle>
+
+<div class="mb-3"><a href="/tickets">&larr; Back to tickets</a></div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger alert-dismissible">
+        @_error
+        <button type="button" class="btn-close" @onclick="() => _error = null"></button>
+    </div>
+}
+
+@if (_ticket is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-start mb-2">
+        <h1 class="h4 mb-0">@_ticket.Subject</h1>
+        <span class="badge fs-6 @UiBadges.Status(_ticket.Status)">@_ticket.Status</span>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <p class="mb-2"><strong>From:</strong> @_ticket.RequesterEmail
+                <span class="ms-3 text-muted small">created @_ticket.CreatedAtUtc.ToLocalTime().ToString("g")</span></p>
+            <div class="mb-2">
+                <span class="badge @UiBadges.Category(_ticket.Category)">@(_ticket.Category?.ToString() ?? "uncategorized")</span>
+                <span class="badge @UiBadges.Urgency(_ticket.Urgency)">@(_ticket.Urgency?.ToString() ?? "no urgency")</span>
+            </div>
+            <p class="mb-0" style="white-space:pre-wrap">@_ticket.Body</p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_ticket.DraftReply))
+    {
+        <div class="card mb-3">
+            <div class="card-header">Draft reply</div>
+            <div class="card-body" style="white-space:pre-wrap">@_ticket.DraftReply</div>
+        </div>
+    }
+
+    @* Approval card *@
+    @if (_ticket.Status == TicketStatus.AwaitingApproval && _pendingRun is not null)
+    {
+        <div class="card border-warning mb-3">
+            <div class="card-header bg-warning text-dark fw-bold">Approval required</div>
+            <div class="card-body">
+                <p class="mb-2">The agent proposes: <strong>@ProposedActionText()</strong></p>
+
+                <label class="form-label">Draft reply (editable)</label>
+                <textarea class="form-control mb-3" rows="6" @bind="_editedDraft"></textarea>
+
+                @if (_showReject)
+                {
+                    <div class="mb-2">
+                        <label class="form-label">Rejection reason</label>
+                        <input class="form-control" @bind="_rejectReason" placeholder="Why are you rejecting this?" />
+                    </div>
+                }
+
+                <div class="d-flex gap-2">
+                    <button class="btn btn-success" disabled="@_deciding" @onclick="ApproveAsync">
+                        @if (_deciding) { <span class="spinner-border spinner-border-sm"></span> }
+                        Approve
+                    </button>
+                    @if (!_showReject)
+                    {
+                        <button class="btn btn-outline-danger" disabled="@_deciding" @onclick="() => _showReject = true">Reject…</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-danger" disabled="@_deciding" @onclick="RejectAsync">Confirm reject</button>
+                        <button class="btn btn-link" disabled="@_deciding" @onclick="() => _showReject = false">Cancel</button>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
+    @* Process button *@
+    <div class="mb-3">
+        <button class="btn btn-primary" disabled="@_processing" @onclick="ProcessAsync">
+            @if (_processing)
+            {
+                <span class="spinner-border spinner-border-sm"></span>
+                <span>Agent running…</span>
+            }
+            else
+            {
+                <span>Process with agent</span>
+            }
+        </button>
+        @if (_processing)
+        {
+            <span class="ms-2 text-muted small">This may take a while on a local model.</span>
+        }
+    </div>
+
+    @* Timeline *@
+    <h2 class="h5">Agent run timeline</h2>
+    @if (_steps.Count == 0)
+    {
+        <p class="text-muted">No agent run yet. Click “Process with agent”.</p>
+    }
+    else
+    {
+        <ol class="list-group list-group-numbered">
+            @foreach (var step in _steps)
+            {
+                <li class="list-group-item">
+                    <div class="d-flex justify-content-between">
+                        <span class="fw-bold">@(step.ToolName ?? "reasoning")</span>
+                        <span class="text-muted small">@step.CreatedAtUtc.ToLocalTime().ToString("T")</span>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(step.Message))
+                    {
+                        <div class="small" style="white-space:pre-wrap">@step.Message</div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(step.ArgumentsJson))
+                    {
+                        <div class="text-muted small"><code>@step.ArgumentsJson</code></div>
+                    }
+                </li>
+            }
+        </ol>
+    }
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Ticket? _ticket;
+    private AgentRun? _pendingRun;
+    private List<AgentStep> _steps = new();
+    private string _editedDraft = "";
+    private string? _rejectReason;
+    private bool _showReject;
+    private bool _processing;
+    private bool _deciding;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _ticket = await Db.Tickets.AsNoTracking().FirstOrDefaultAsync(t => t.Id == Id);
+        if (_ticket is null)
+            return;
+
+        var latestRun = await Db.AgentRuns.AsNoTracking()
+            .Where(r => r.TicketId == Id)
+            .OrderByDescending(r => r.StartedAtUtc)
+            .FirstOrDefaultAsync();
+
+        _steps = latestRun is null
+            ? new List<AgentStep>()
+            : await Db.AgentSteps.AsNoTracking()
+                .Where(s => s.AgentRunId == latestRun.Id)
+                .OrderBy(s => s.StepIndex)
+                .ToListAsync();
+
+        _pendingRun = await Db.AgentRuns.AsNoTracking()
+            .Where(r => r.TicketId == Id && r.PendingToolName != null)
+            .OrderByDescending(r => r.StartedAtUtc)
+            .FirstOrDefaultAsync();
+
+        _editedDraft = _ticket.DraftReply ?? "";
+    }
+
+    private string ProposedActionText()
+    {
+        if (_pendingRun is null)
+            return "—";
+
+        return _pendingRun.PendingToolName switch
+        {
+            "save_ticket_result" => $"Finalize — Save as {ArgValue("status") ?? "Resolved"}",
+            "escalate_to_human" => $"Escalate to a human — {ArgValue("reason") ?? "(no reason given)"}",
+            _ => _pendingRun.PendingToolName ?? "—"
+        };
+    }
+
+    private string? ArgValue(string key)
+    {
+        if (string.IsNullOrWhiteSpace(_pendingRun?.PendingArgumentsJson))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(_pendingRun.PendingArgumentsJson);
+            if (doc.RootElement.TryGetProperty(key, out var v))
+                return v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString();
+        }
+        catch { /* ignore malformed args */ }
+        return null;
+    }
+
+    private async Task ProcessAsync()
+    {
+        _processing = true;
+        _error = null;
+        try
+        {
+            await Triage.ProcessTicketAsync(Id);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"The triage agent could not complete. Is the selected AI provider running? ({ex.Message})";
+        }
+        finally
+        {
+            _processing = false;
+        }
+    }
+
+    private async Task ApproveAsync()
+    {
+        _deciding = true;
+        _error = null;
+        try
+        {
+            var edited = _editedDraft != (_ticket?.DraftReply ?? "") ? _editedDraft : null;
+            await Approval.ApproveAsync(Id, edited);
+            _showReject = false;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not approve: {ex.Message}";
+        }
+        finally
+        {
+            _deciding = false;
+        }
+    }
+
+    private async Task RejectAsync()
+    {
+        _deciding = true;
+        _error = null;
+        try
+        {
+            await Approval.RejectAsync(Id, _rejectReason);
+            _showReject = false;
+            _rejectReason = null;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not reject: {ex.Message}";
+        }
+        finally
+        {
+            _deciding = false;
+        }
+    }
+}
