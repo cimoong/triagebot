@@ -59,7 +59,3 @@ Thumbs.db
 .nuget/
 **/packages/*
 !**/packages/build/
-
-# Large demo media is hosted externally, never committed (GitHub rejects >100MB)
-docs/demo.gif
-docs/*.mp4

@@ -6,9 +6,9 @@ TriageBot is a production-minded .NET 10 sample that shows how to build a *real*
 
 > ⚠️ This is a portfolio MVP built to demonstrate engineering judgement around agents, tool calling, and human-in-the-loop design — not a finished product. See [Limitations](#limitations).
 
-> 🎥 **Demo recording:** the full walkthrough GIF is too large to commit to the repo
-> (GitHub rejects files over 100 MB). Host it externally (e.g. a GitHub Release asset or
-> a CDN) and link it here. The screenshots below cover the same flow.
+![TriageBot demo — process a ticket, view the timeline, approve, resolve](docs/demo.gif)
+
+> 🎥 A higher-quality MP4 of the same walkthrough is at [`docs/demo.mp4`](docs/demo.mp4).
 
 ---
 
