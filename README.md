@@ -1,5 +1,13 @@
 # TriageBot
 
+![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
+![Blazor Server](https://img.shields.io/badge/Blazor-Server-512BD4?logo=blazor&logoColor=white)
+![Microsoft Agent Framework](https://img.shields.io/badge/Microsoft%20Agent%20Framework-Agents.AI-0078D4)
+![EF Core 10](https://img.shields.io/badge/EF%20Core-10-512BD4)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![Ollama](https://img.shields.io/badge/LLM-Ollama%20%7C%20Gemini-000000?logo=ollama&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+
 **An AI agent that triages IT support tickets — read, classify, draft a reply, and resolve or escalate, with a human approving every final action.**
 
 TriageBot is a production-minded .NET 10 sample that shows how to build a *real* LLM **agent** (not a chatbot): it reasons over a ticket, calls tools to mutate state, records every step for audit, and pauses for human approval before doing anything irreversible. It runs against a **local model (Ollama)** or a **cloud model (Gemini)**, switchable at runtime.
@@ -11,6 +19,17 @@ TriageBot is a production-minded .NET 10 sample that shows how to build a *real*
 > 🎥 A higher-quality MP4 of the same walkthrough is at [`docs/demo.mp4`](docs/demo.mp4).
 
 ---
+
+## What this project demonstrates
+
+A compact but honest showcase of the skills behind shipping an AI feature, not just calling an API:
+
+- 🧠 **Agent design** — tool calling, a bounded reasoning loop, and knowing *when an agent is (and isn't) the right tool*.
+- 🙋 **Human-in-the-loop** — a custom approval gate so the model proposes but a person decides every irreversible action.
+- 🔀 **Provider abstraction** — one codebase, two LLMs (local Ollama / cloud Gemini), switchable at runtime via keyed DI.
+- 🏛️ **Clean Architecture** — dependencies point inward; the domain knows nothing about EF Core or any LLM.
+- 🛡️ **Production-mindedness** — retries, graceful failure, input validation, RFC 7807 errors, structured logging.
+- 📊 **Evaluation** — a harness that measures classification and escalation accuracy, because "it's AI" is not a test strategy.
 
 ## Problem statement
 
@@ -38,6 +57,28 @@ Clean Architecture across four projects:
 | `TriageBot.Core`           | Domain models, enums, tool & service abstractions (no external deps).     |
 | `TriageBot.Infrastructure` | EF Core, the LLM agent, tools, and provider wiring behind Core interfaces. |
 | `TriageBot.Tests`          | xUnit unit tests for tools and services.                                  |
+
+### The layers (dependencies point inward)
+
+```
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │  TriageBot.Web  ·  Presentation                                         │
+   │  Blazor Server UI · API endpoints · composition root (DI wiring)        │
+   └─────────────────────────┬───────────────────────────┬──────────────────┘
+                             │ depends on                │ registers (DI)
+                             ▼                            ▼
+   ┌──────────────────────────────────┐   ┌──────────────────────────────────┐
+   │  TriageBot.Core  ·  Domain       │   │  TriageBot.Infrastructure        │
+   │  entities · enums · interfaces   │◀──│  EF Core · Agent · Tools · LLM   │
+   │  (ITicketTriageService, …)       │   │  concrete impls of Core's        │
+   │  NO external dependencies        │   │  interfaces                      │
+   └──────────────────────────────────┘   └──────────────────────────────────┘
+              ▲
+              └── Core depends on nothing outward; Web and Infrastructure both
+                  depend on Core. Swap the DB or the LLM without touching the domain.
+```
+
+Why it matters: the domain (`Core`) defines *contracts* and knows nothing about EF Core, Ollama, or Gemini. Infrastructure implements those contracts; the Web host wires them together. That inversion is what lets the same agent logic run against two different LLM providers, and makes the tools and services unit-testable in isolation.
 
 ### Agent flow
 
@@ -80,6 +121,62 @@ Reaching for an "AI agent" is often overkill. It's worth being honest about when
 - **An agent earns its place** when the *control flow itself* depends on the model's reading of unstructured input, and the work is a multi-step sequence of actions whose shape varies per case.
 
 TriageBot is the third case, and deliberately so: the ticket is free-form natural language; the category, urgency, the content of the reply, *and* the decision to resolve vs. escalate all depend on understanding it; and the steps chain (you draft a reply differently once you know it's a critical outage). That non-deterministic, NLP-driven branching across multiple tool calls is what an agent is for. **At the same time**, the one place where determinism matters — actually changing the ticket's state — is taken *out* of the model's hands and gated behind human approval. That split (model for judgement, code + human for consequences) is the point of the design.
+
+## Key code
+
+Three snippets that capture the design (trimmed for readability — see the source for the full versions).
+
+**1. Human-in-the-loop — the "final" tools *propose*, they don't act.** The agent can only call `Request…` variants, which persist the intended action and pause the ticket instead of executing it:
+
+```csharp
+// TicketTools.cs
+[Description("Propose finalizing the ticket ... This does NOT take effect immediately: " +
+             "it is queued for human approval. After calling this, stop and wait.")]
+public Task<ToolResult> RequestSaveTicketResultAsync(Guid ticketId, TicketStatus status, ...)
+    => QueueForApprovalAsync(ticketId, SaveTicketResultTool, new { status }, ct);
+
+private async Task<ToolResult> QueueForApprovalAsync(Guid ticketId, string toolName, object args, ...)
+{
+    var run = await _db.AgentRuns.FindAsync([_agentRunId], ct);
+    run.PendingToolName      = toolName;                             // what the agent wants to do
+    run.PendingArgumentsJson = JsonSerializer.Serialize(args, JsonOptions);
+    ticket.Status            = TicketStatus.AwaitingApproval;        // ...but a human decides
+    // ...append an AgentStep, save, and tell the model to stop and wait.
+}
+```
+
+**2. Runtime provider switching via keyed DI.** Two `IChatClient`s under stable keys; the resolver picks one per session — and the tool-calling loop is bounded:
+
+```csharp
+// AiServiceCollectionExtensions.cs
+services.AddKeyedChatClient("local", sp => BuildOpenAiCompatibleClient(/* Ollama  */))
+    .UseFunctionInvocation(configure: f => f.MaximumIterationsPerRequest = 10) // bound the loop
+    .UseLogging();
+services.AddKeyedChatClient("gemini", sp => BuildOpenAiCompatibleClient(/* Gemini */))
+    .UseFunctionInvocation()
+    .UseLogging();
+
+// AiClientResolver.cs — resolve the client for the session's active provider at runtime.
+public IChatClient GetChatClient(AiProvider provider)
+    => _serviceProvider.GetRequiredKeyedService<IChatClient>(KeyFor(provider));
+```
+
+**3. Deterministic approval — no second LLM round-trip decides the outcome.** On approve, code executes the *exact* action the agent proposed:
+
+```csharp
+// TicketApprovalService.cs
+switch (run.PendingToolName)
+{
+    case TicketTools.SaveTicketResultTool:
+        var status = ParseEnumArg(run.PendingArgumentsJson, "status", TicketStatus.Resolved);
+        await tools.SaveTicketResultAsync(ticketId, status, ct);
+        break;
+    case TicketTools.EscalateToHumanTool:
+        var reason = ParseStringArg(run.PendingArgumentsJson, "reason") ?? "Escalation approved.";
+        await tools.EscalateToHumanAsync(ticketId, reason, ct);
+        break;
+}
+```
 
 ## Tech stack
 
