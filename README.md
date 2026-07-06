@@ -43,7 +43,7 @@ Doing that by hand is slow and inconsistent, and the input is natural language, 
 - **Human-in-the-loop approval** — the agent only *proposes* a final action (resolve or escalate); it is queued and executed only after a human approves. The reviewer can edit the draft reply before approving, or reject (with a reason), in which case nothing is executed.
 - **Runtime provider switching** — toggle between a local Ollama model and Google Gemini from the header; the choice is per session.
 - **Full audit trail** — every run is an `AgentRun` with one `AgentStep` per tool call (arguments, result, timestamp), surfaced as a timeline in the UI.
-- **Resilience** — transient provider failures are retried; an unreachable model fails the run cleanly (recorded, ticket not stranded) instead of crashing.
+- **Resilience** — transient provider failures are retried; an unreachable model fails the run cleanly (recorded, ticket not stranded) instead of crashing. A cloud **rate/token limit (HTTP 429)** is detected and surfaced distinctly ("wait and try again", API returns `429` + `Retry-After`) rather than being reported as an outage.
 - **Blazor Server UI** — dashboard with filters, ticket detail with the run timeline and approval card.
 - **Small eval harness** — measure classification and escalation accuracy against a labelled dataset, per provider.
 
@@ -415,6 +415,51 @@ Switch providers from the header dropdown (per session); the default is set by `
 | 32 GB+  | `qwen3:14b` / larger         | Most reliable tool calling locally.                |
 
 Set the model via `LocalAi:ChatModel` in `appsettings.json` (or the `LocalAi__ChatModel` environment variable).
+
+## Cost optimization
+
+Triage is split into two phases so each uses the cheapest model that does the job well (configured in `GroqOptions`):
+
+| Phase | Work | Model (Groq) | Why |
+| ----- | ---- | ------------ | --- |
+| **Classify** | Decide category + urgency | `llama-3.1-8b-instant` (`ClassificationModel`) | Light reasoning; a small, fast, cheap model is enough. |
+| **Draft + decide** | Write the reply, propose resolve/escalate | `llama-3.3-70b-versatile` (`ChatModel`) | Needs quality prose **and reliable tool calling**. |
+
+- **Classification is a single, tool-free structured call** (`GetResponseAsync<T>`), *not* part of the agent's tool loop. That matters because `llama-3.1-8b-instant` is **not** reliable at (and Groq doesn't offer `json_schema` structured output on) that model — so the small model is used only for a JSON-object classification, and **every tool call runs on the 70B model**. Single-model providers (Local/Gemini) simply use their one model for both phases.
+- **Response caching (classification only):** the classification client is wrapped with `.UseDistributedCache()` (in-memory `IDistributedCache`). Identical ticket text returns the cached category/urgency with **no LLM call**.
+  - *When is caching safe here?* Only for the **pure, side-effect-free** classification call: the same ticket text should deterministically map to the same category/urgency, and staleness is a non-issue (the ticket text is immutable). The cache key is scoped to the model, so a cached result is never served for a different model.
+  - *Why the agent is **not** cached:* its tool calls have **side effects** (DB writes, status changes). A cache hit would return the final text while **skipping** those writes — so caching the agent would be incorrect. This is a deliberate boundary.
+- **Token limits:** `MaxOutputTokens` is capped per call (classification 256, draft 800), and the agent's system prompt was shortened (classification is no longer one of its steps) to cut input tokens.
+
+### Measuring it
+
+Every run logs a one-line cost summary (no backend required):
+
+```
+Run <id> cost — provider=Groq classify(in/out)=<CIn>/<COut> draft(in/out)=<AIn>/<AOut> total_tokens=<T> latency_ms=<ms>
+```
+
+The same token counts and latency also flow to Application Insights as `gen_ai.*` spans/metrics (see *Observability*). To measure **before/after**, process the same set of tickets and compare the logged totals.
+
+**How to test:**
+```bash
+# Select Groq and process several representative tickets (include a Critical one).
+dotnet run --project src/TriageBot.Web       # header -> Groq, or Ai__DefaultProvider=Groq
+# Process the same tickets twice to see the classification cache hit (0 classify tokens on the 2nd run).
+# Read the "Run ... cost" lines from the console/logs and fill in the table below.
+```
+
+### Cost optimization (before/after)
+
+Fill in from your own measurements (e.g. average over N identical tickets, one provider):
+
+| Scenario | Tokens in | Tokens out | Latency (ms) | Est. cost |
+| -------- | --------- | ---------- | ------------ | --------- |
+| Before (single 70B model, no cache) | | | | |
+| After (8B classify + 70B draft) | | | | |
+| After + cache hit (repeat ticket) | | | | |
+
+> Estimate cost from your provider's per-token pricing (e.g. Groq's published rates for each model) × the token counts above.
 
 ## Evaluation
 

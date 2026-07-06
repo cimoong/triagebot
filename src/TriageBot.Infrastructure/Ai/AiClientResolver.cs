@@ -26,6 +26,17 @@ public sealed class AiClientResolver : IAiClientResolver
 
     public IChatClient GetActiveChatClient() => GetChatClient(_state.Current);
 
+    public IChatClient GetClassificationChatClient(AiProvider provider) => provider switch
+    {
+        // Groq has a small, cheap, cached model dedicated to classification (cost optimization).
+        AiProvider.Groq => _serviceProvider.GetRequiredKeyedService<IChatClient>(GroqClassificationKey),
+        // Single-model providers classify with their main model.
+        _ => GetChatClient(provider)
+    };
+
+    /// <summary>DI key for the small, cached Groq classification client.</summary>
+    internal const string GroqClassificationKey = "groq-classify";
+
     /// <summary>Stable DI keys used when registering the keyed chat clients.</summary>
     internal static string KeyFor(AiProvider provider) => provider switch
     {

@@ -26,22 +26,22 @@ public sealed class TicketTriageAgent
         _logger = loggerFactory.CreateLogger<TicketTriageAgent>();
     }
 
+    // Shorter than a full triage prompt: classification is already done (by the lightweight model), so the
+    // agent only drafts and decides. Fewer steps = fewer tokens.
     private const string Instructions =
         """
-        You are TriageBot, an IT support ticket triage agent. Process each ticket in this exact order:
+        You are TriageBot. The ticket's category and urgency are already decided (given in the message).
+        Do exactly two things, in order:
 
-        1. Decide the category and urgency, then call record_classification with your decision and a short reasoning.
-        2. Write a professional, concise reply to the requester, then call draft_reply to save that text.
-        3. If the urgency is Critical, or the issue needs another team or a human decision, call escalate_to_human
-           with a clear reason. Otherwise finalize the ticket by calling save_ticket_result with status Resolved.
+        1. Write a professional, concise reply to the requester, then call draft_reply to save it.
+        2. If the urgency is Critical, or the issue needs another team or a human decision, call escalate_to_human
+           with a clear reason. Otherwise call save_ticket_result with status Resolved.
 
         Rules:
-        - Always use the ticket id given in the message for every tool call.
-        - Keep the reply professional, concise and helpful.
-        - Do not invent facts (account names, internal ticket numbers, fixes you cannot know). If key information is
-          missing, use draft_reply to ask the requester for the specific details needed, and do NOT resolve the ticket.
-        - The final actions (escalate_to_human, save_ticket_result) only PROPOSE the action: they are queued for a
-          human to approve. After you call one of them, STOP — do not call any more tools.
+        - Use the ticket id from the message for every tool call.
+        - Do not invent facts. If key information is missing, use draft_reply to ask for it and do NOT resolve.
+        - save_ticket_result and escalate_to_human only PROPOSE the action (a human approves it). After calling
+          one, STOP — no more tools.
         """;
 
     /// <summary>
@@ -62,7 +62,9 @@ public sealed class TicketTriageAgent
             ChatOptions = new ChatOptions
             {
                 Instructions = Instructions,
-                Tools = tools
+                Tools = tools,
+                // Bound the reply length: a triage draft doesn't need more than this, and it caps cost.
+                MaxOutputTokens = 800
             }
         };
 
@@ -82,9 +84,11 @@ public sealed class TicketTriageAgent
 
         var prompt =
             $"""
-             {noThink}Triage this IT support ticket.
+             {noThink}Draft a reply for this IT support ticket, then propose the final action.
 
              Ticket id: {ticket.Id}
+             Category: {ticket.Category?.ToString() ?? "Unknown"}
+             Urgency: {ticket.Urgency?.ToString() ?? "Unknown"}
              From: {ticket.RequesterEmail}
              Subject: {ticket.Subject}
 

@@ -150,6 +150,18 @@ public sealed class TicketTools : ITicketTools
     ];
 
     /// <summary>
+    /// Tools for the drafting/decision phase of the agent, used when classification has ALREADY been done
+    /// (cost optimization: a separate small model classifies first). Excludes record_classification, so the
+    /// large model only drafts the reply and proposes a final action.
+    /// </summary>
+    public IList<AITool> AsDraftingTools() =>
+    [
+        AIFunctionFactory.Create(DraftReplyAsync, "draft_reply", description: null),
+        AIFunctionFactory.Create(RequestSaveTicketResultAsync, SaveTicketResultTool, description: null),
+        AIFunctionFactory.Create(RequestEscalateToHumanAsync, EscalateToHumanTool, description: null)
+    ];
+
+    /// <summary>
     /// Human-in-the-loop gate: instead of running a final action, persist it on the run as a pending
     /// proposal and move the ticket to <see cref="TicketStatus.AwaitingApproval"/>. The approval service
     /// later executes (or cancels) it. Idempotent within a run — a second proposal is ignored.

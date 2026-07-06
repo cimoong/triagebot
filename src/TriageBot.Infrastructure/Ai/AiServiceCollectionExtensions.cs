@@ -1,6 +1,7 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http.Resilience;
@@ -13,8 +14,9 @@ using TriageBot.Infrastructure.Observability;
 namespace TriageBot.Infrastructure.Ai;
 
 /// <summary>
-/// Registers two runtime-switchable <see cref="IChatClient"/>s via Microsoft.Extensions.AI:
-/// keyed "local" (Ollama, default) and "gemini" (optional). Both talk to OpenAI-compatible endpoints.
+/// Registers the runtime-switchable <see cref="IChatClient"/>s via Microsoft.Extensions.AI: keyed
+/// "local" (Ollama, default), "gemini" and "groq" (optional), plus a small, cached "groq-classify"
+/// client used for cheap classification. All talk to OpenAI-compatible endpoints.
 /// </summary>
 public static class AiServiceCollectionExtensions
 {
@@ -31,6 +33,10 @@ public static class AiServiceCollectionExtensions
         services.Configure<LocalAiOptions>(configuration.GetSection(LocalAiOptions.Section));
         services.Configure<GeminiOptions>(configuration.GetSection(GeminiOptions.Section));
         services.Configure<GroqOptions>(configuration.GetSection(GroqOptions.Section));
+
+        // In-memory IDistributedCache backs response caching for the (pure, side-effect-free)
+        // classification calls — identical ticket text is classified once, not on every run.
+        services.AddDistributedMemoryCache();
 
         // Named HttpClients let us give local inference a generous timeout (slow CPU).
         services.AddHttpClient(LocalHttpClient, (sp, http) =>
@@ -97,6 +103,33 @@ public static class AiServiceCollectionExtensions
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
             .UseFunctionInvocation()
+            .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
+            .UseLogging();
+
+        // Cost optimization: a SMALL Groq model dedicated to classification (light reasoning), with
+        // response caching. Classification is a single, tool-free, side-effect-free call, so caching is
+        // safe here: identical ticket text returns the cached category/urgency with no LLM call.
+        // (We do NOT cache the agent's drafting loop — its tool calls have side effects, so a cache hit
+        // would wrongly skip the DB writes.) No UseFunctionInvocation: classification uses no tools.
+        services.AddKeyedChatClient(AiClientResolver.GroqClassificationKey, sp =>
+            {
+                var o = sp.GetRequiredService<IOptions<GroqOptions>>().Value;
+                if (string.IsNullOrWhiteSpace(o.ApiKey))
+                {
+                    throw new InvalidOperationException(
+                        "The Groq provider was selected but 'Groq:ApiKey' is not configured. " +
+                        "Set it via user-secrets or the 'Groq__ApiKey' environment variable.");
+                }
+
+                var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient(GroqHttpClient);
+                return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ClassificationModel, http);
+            })
+            // Cache OUTERMOST so a hit short-circuits before the telemetry/model layers (0 tokens on hit).
+            .Use((inner, provider) => new DistributedCachingChatClient(inner, provider.GetRequiredService<IDistributedCache>())
+            {
+                // Scope the key to this model so a cached classification is never served for another model.
+                CacheKeyAdditionalValues = new object[] { AiClientResolver.GroqClassificationKey }
+            })
             .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
             .UseLogging();
 

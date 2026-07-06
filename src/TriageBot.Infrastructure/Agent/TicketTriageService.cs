@@ -1,3 +1,4 @@
+using System.ClientModel;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.EntityFrameworkCore;
@@ -20,17 +21,20 @@ namespace TriageBot.Infrastructure.Agent;
 public sealed class TicketTriageService : ITicketTriageService
 {
     private readonly TriageBotDbContext _db;
+    private readonly TicketClassifier _classifier;
     private readonly TicketTriageAgent _agent;
     private readonly IAiClientResolver _resolver;
     private readonly ILogger<TicketTriageService> _logger;
 
     public TicketTriageService(
         TriageBotDbContext db,
+        TicketClassifier classifier,
         TicketTriageAgent agent,
         IAiClientResolver resolver,
         ILogger<TicketTriageService> logger)
     {
         _db = db;
+        _classifier = classifier;
         _agent = agent;
         _resolver = resolver;
         _logger = logger;
@@ -65,22 +69,42 @@ public sealed class TicketTriageService : ITicketTriageService
 
         _logger.LogInformation("Triage run {RunId} started for ticket {TicketId} ({Provider}).", run.Id, ticketId, run.Provider);
 
-        // 2. Run the agent. Non-final tools execute (and self-log). A final-action tool does NOT execute:
-        //    it queues a pending proposal on the run and moves the ticket to AwaitingApproval, then the agent stops.
+        // 2. Two-phase for cost efficiency:
+        //    (a) classify with a cheap, cacheable single call on a lightweight model;
+        //    (b) run the agent (large model) for drafting + the proposed final action only.
+        // Non-final tools execute (and self-log). A final-action tool does NOT execute: it queues a pending
+        // proposal on the run and moves the ticket to AwaitingApproval, then the agent stops.
         var tools = new TicketTools(_db, run.Id);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        UsageDetails? classifyUsage;
         AgentResponse response;
         try
         {
-            response = await _agent.RunAsync(ticket, provider, tools.AsAITools(), cancellationToken);
+            classifyUsage = await _classifier.ClassifyAndRecordAsync(ticket, provider, tools, cancellationToken);
+            response = await _agent.RunAsync(ticket, provider, tools.AsDraftingTools(), cancellationToken);
         }
         catch (Exception ex)
         {
-            // The provider is unreachable/timed out, or a tool threw unexpectedly. Fail the run cleanly:
+            // The provider is unreachable/timed out/rate-limited, or a tool threw. Fail the run cleanly:
             // record it, leave a visible audit step, and don't strand the ticket in Processing.
             await FailRunAsync(run, ticket, tools, ex, cancellationToken);
+
+            if (IsRateLimit(ex))
+            {
+                // 429: the provider IS reachable — the token/request quota was exceeded. Distinct, honest message.
+                throw new TriageRunException(
+                    $"The '{provider}' AI provider hit its rate/token limit (HTTP 429). Please wait a moment and try again" +
+                    (provider == AiProvider.Local ? "." : ", or switch provider."),
+                    ex, isRateLimited: true);
+            }
+
             throw new TriageRunException(
                 $"The triage agent could not complete. Is the '{provider}' AI provider running and reachable?", ex);
         }
+        stopwatch.Stop();
+
+        // Concise per-run cost line (tokens + latency), complementing the OpenTelemetry gen_ai metrics.
+        LogTokenUsage(run.Id, ticketId, provider, classifyUsage, response.Usage, stopwatch.ElapsedMilliseconds);
 
         var awaitingApproval = run.PendingToolName is not null; // set by the final-action tool during the run
         if (awaitingApproval)
@@ -174,6 +198,40 @@ public sealed class TicketTriageService : ITicketTriageService
         }
     }
 
+    /// <summary>
+    /// Logs a one-line token/latency summary per run so cost can be measured (and compared before/after
+    /// the model-split + caching optimization) without a telemetry backend. Split by phase because the
+    /// classification and drafting phases use different models.
+    /// </summary>
+    private void LogTokenUsage(Guid runId, Guid ticketId, AiProvider provider, UsageDetails? classify, UsageDetails? agent, long ms)
+    {
+        var cin = classify?.InputTokenCount ?? 0L;
+        var cout = classify?.OutputTokenCount ?? 0L;
+        var ain = agent?.InputTokenCount ?? 0L;
+        var aout = agent?.OutputTokenCount ?? 0L;
+
+        _logger.LogInformation(
+            "Run {RunId} cost — provider={Provider} classify(in/out)={CIn}/{COut} draft(in/out)={AIn}/{AOut} " +
+            "total_tokens={Total} latency_ms={Ms}",
+            runId, provider, cin, cout, ain, aout, cin + cout + ain + aout, ms);
+    }
+
+    /// <summary>
+    /// True if any exception in the chain is an HTTP 429 (rate/token limit) from the OpenAI-compatible client.
+    /// Walks inner exceptions (and AggregateException) because the agent/function-invocation layers may wrap it.
+    /// </summary>
+    private static bool IsRateLimit(Exception? ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is ClientResultException { Status: 429 })
+                return true;
+            if (e is AggregateException agg && agg.InnerExceptions.Any(inner => IsRateLimit(inner)))
+                return true;
+        }
+        return false;
+    }
+
     private static string Truncate(string value, int max) =>
         value.Length <= max ? value : value[..max];
 }
@@ -181,5 +239,9 @@ public sealed class TicketTriageService : ITicketTriageService
 /// <summary>Raised when a triage run cannot complete (e.g. the AI provider is unreachable). Carries a user-safe message.</summary>
 public sealed class TriageRunException : Exception
 {
-    public TriageRunException(string message, Exception innerException) : base(message, innerException) { }
+    public TriageRunException(string message, Exception innerException, bool isRateLimited = false)
+        : base(message, innerException) => IsRateLimited = isRateLimited;
+
+    /// <summary>True when the run failed because the AI provider returned a rate/token limit (HTTP 429).</summary>
+    public bool IsRateLimited { get; }
 }

@@ -6,6 +6,7 @@ using OpenTelemetry.Trace;
 using TriageBot.Core.Abstractions;
 using TriageBot.Core.Enums;
 using TriageBot.Infrastructure;
+using TriageBot.Infrastructure.Agent;
 using TriageBot.Infrastructure.Ai;
 using TriageBot.Infrastructure.Observability;
 using TriageBot.Infrastructure.Persistence;
@@ -131,8 +132,9 @@ app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, Ca
 
 // Run the triage agent over a ticket. T5: executes immediately (no approval gate yet — added in T6).
 app.MapPost("/api/tickets/{id:guid}/process", async (
-    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory) =>
+    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory, HttpContext httpContext) =>
 {
+    var logger = loggerFactory.CreateLogger("TicketProcessing");
     try
     {
         // Deliberately not tied to the request-abort token: a triage run mutates state and may pause for
@@ -142,12 +144,22 @@ app.MapPost("/api/tickets/{id:guid}/process", async (
             ? Results.NotFound(new { error = $"Ticket {id} was not found." })
             : Results.Ok(result);
     }
+    catch (TriageRunException ex) when (ex.IsRateLimited)
+    {
+        // The provider is reachable but its rate/token quota was exceeded — 429, not a 503 outage.
+        logger.LogWarning(ex, "Triage run for ticket {TicketId} hit the provider rate limit.", id);
+        httpContext.Response.Headers["Retry-After"] = "10";
+        return Results.Json(
+            new { ticketId = id, error = ex.Message, rateLimited = true },
+            statusCode: StatusCodes.Status429TooManyRequests);
+    }
     catch (Exception ex)
     {
-        loggerFactory.CreateLogger("TicketProcessing")
-            .LogError(ex, "Triage run failed for ticket {TicketId}.", id);
+        logger.LogError(ex, "Triage run failed for ticket {TicketId}.", id);
+        var message = ex is TriageRunException ? ex.Message
+            : $"The triage agent could not complete. Is the AI provider running? ({ex.Message})";
         return Results.Json(
-            new { ticketId = id, error = $"The triage agent could not complete. Is the AI provider running? ({ex.Message})" },
+            new { ticketId = id, error = message },
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });

@@ -44,6 +44,7 @@ public static class DependencyInjection
         services.AddAiProviders(configuration);
 
         // Core triage agent (Microsoft Agent Framework) + orchestration service.
+        services.AddScoped<TicketClassifier>();
         services.AddScoped<TicketTriageAgent>();
         services.AddScoped<ITicketTriageService, TicketTriageService>();
         services.AddScoped<ITicketApprovalService, TicketApprovalService>();
