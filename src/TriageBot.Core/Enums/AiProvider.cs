@@ -7,5 +7,8 @@ public enum AiProvider
     Local,
 
     /// <summary>Google Gemini via its OpenAI-compatible endpoint. Requires an API key.</summary>
-    Gemini
+    Gemini,
+
+    /// <summary>Groq via its OpenAI-compatible endpoint. Fast cloud inference. Requires an API key.</summary>
+    Groq
 }

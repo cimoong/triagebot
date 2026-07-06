@@ -31,6 +31,7 @@ public sealed class AiClientResolver : IAiClientResolver
     {
         AiProvider.Local => "local",
         AiProvider.Gemini => "gemini",
+        AiProvider.Groq => "groq",
         _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unknown AI provider.")
     };
 }
