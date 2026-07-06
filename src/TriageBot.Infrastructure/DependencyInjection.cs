@@ -17,10 +17,28 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        var connectionString = configuration.GetConnectionString("TriageBotDb")
-            ?? throw new InvalidOperationException("Connection string 'TriageBotDb' was not found.");
+        // Connection string always comes from configuration. In production it is supplied via the
+        // environment variable ConnectionStrings__TriageBotDb (12-factor); appsettings only carries a
+        // local dev value. There is no hard-coded production fallback, so credentials never ship in the app.
+        var rawConnectionString = configuration.GetConnectionString("TriageBotDb")
+            ?? throw new InvalidOperationException(
+                "Connection string 'TriageBotDb' was not found. Set the ConnectionStrings__TriageBotDb " +
+                "environment variable (accepts a Neon/Postgres URL or Npgsql key-value form).");
 
-        services.AddDbContext<TriageBotDbContext>(options => options.UseNpgsql(connectionString));
+        // Accept either a managed-provider URL (postgresql://…) or Npgsql key-value form.
+        var connectionString = NpgsqlConnectionString.Normalize(rawConnectionString);
+
+        services.AddDbContext<TriageBotDbContext>(options =>
+            options.UseNpgsql(connectionString, npgsql =>
+            {
+                // Serverless Postgres (e.g. Neon) idle-suspends and cold-starts; retry transient
+                // failures so the first request after a wake-up doesn't fail. Also bound command time.
+                npgsql.EnableRetryOnFailure(
+                    maxRetryCount: 8,
+                    maxRetryDelay: TimeSpan.FromSeconds(15),
+                    errorCodesToAdd: null);
+                npgsql.CommandTimeout(30);
+            }));
 
         // Runtime-switchable LLM providers (Local/Ollama default, Gemini optional).
         services.AddAiProviders(configuration);

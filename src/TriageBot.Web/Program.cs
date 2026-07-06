@@ -33,6 +33,18 @@ if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNEC
 
 var app = builder.Build();
 
+// Log which database this instance targets — host + database only, never the password —
+// so it's obvious at a glance whether it's pointing at local Postgres or a managed one (Neon).
+{
+    var rawConnectionString = app.Configuration.GetConnectionString("TriageBotDb");
+    if (!string.IsNullOrWhiteSpace(rawConnectionString))
+    {
+        var b = new Npgsql.NpgsqlConnectionStringBuilder(NpgsqlConnectionString.Normalize(rawConnectionString));
+        app.Logger.LogInformation("Database target: Host={Host}; Port={Port}; Database={Database}; SslMode={SslMode}",
+            b.Host, b.Port, b.Database, b.SslMode);
+    }
+}
+
 // Optional, opt-in EF Core migration on startup (env RunMigrationsOnStartup=true; default false).
 // Trade-off: convenient for a single-instance demo, but risky in production — concurrent instances can
 // race the migration, and app identities usually shouldn't hold schema-change rights. Prefer running

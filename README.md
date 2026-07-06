@@ -264,6 +264,57 @@ docker compose -f docker-compose.prod.yml up --build
 3. **Add ticket** → **Process with agent** → watch the timeline (`record_classification` → `draft_reply` → proposed final action). Seeing those tool steps confirms tool calling works against Groq in the container.
 4. **Approve** (or **Reject**) the proposed action and confirm the status changes.
 
+## Production database (Neon)
+
+For a real deployment, point the app at a managed serverless Postgres such as [Neon](https://neon.tech). The connection string is supplied **only** via the `ConnectionStrings__TriageBotDb` environment variable — there is no production fallback in the app, so no credentials ship in the image or in `appsettings.json`.
+
+**1. Create a Neon project** at <https://console.neon.tech> and open its **Connection Details**. Neon gives you a URL like:
+
+```
+postgresql://<user>:<password>@<endpoint>.<region>.aws.neon.tech/<db>?sslmode=require
+```
+
+**2. Use it directly — or convert to Npgsql form.** The app accepts **either**: it auto-detects a `postgresql://` URL and converts it to Npgsql key-value form ([`NpgsqlConnectionString.Normalize`](src/TriageBot.Infrastructure/Persistence/NpgsqlConnectionString.cs)). The equivalent key-value form is:
+
+```
+Host=<endpoint>.<region>.aws.neon.tech;Port=5432;Database=<db>;Username=<user>;Password=<password>;SSL Mode=Require
+```
+
+> **SSL note:** with Npgsql 8+, `SSL Mode=Require` already means "encrypt, don't validate the chain" (which is what Neon needs) — the old `Trust Server Certificate=true` flag is now a no-op. Use `SSL Mode=VerifyFull` if you want full certificate validation.
+
+**3. Set the environment variable** (keep the real value out of source control):
+
+```bash
+# bash / Linux / macOS
+export ConnectionStrings__TriageBotDb="postgresql://<user>:<password>@<endpoint>.<region>.aws.neon.tech/<db>?sslmode=require"
+```
+```powershell
+# PowerShell
+$env:ConnectionStrings__TriageBotDb = "postgresql://<user>:<password>@<endpoint>.<region>.aws.neon.tech/<db>?sslmode=require"
+```
+
+**4. Apply migrations to Neon** (creates the schema **and** inserts the seeded sample tickets, so a fresh demo DB has content):
+
+```bash
+dotnet ef database update --project src/TriageBot.Infrastructure --startup-project src/TriageBot.Web
+```
+
+**5. Run the app against Neon:**
+
+```bash
+dotnet run --project src/TriageBot.Web       # uses ConnectionStrings__TriageBotDb from the env
+```
+
+Or run the container/compose stack with the same variable in your `.env`.
+
+### Seeding sample data (idempotent)
+
+The sample tickets are declared with EF Core's `HasData` and are inserted **by the migration itself**, so `dotnet ef database update` seeds them exactly once. Re-running migrations never duplicates them — the seeding is idempotent by construction, no extra script needed. (Add more rows to `SeedData` + a new migration to extend the demo set.)
+
+### Why retry matters for serverless Postgres
+
+Neon **idle-suspends** a database after inactivity and **cold-starts** it on the next connection, which can take a second or few. Without resilience, the first request after a quiet period would hit a transient connection error and fail. The app enables EF Core's retry strategy (`EnableRetryOnFailure`, in [`DependencyInjection`](src/TriageBot.Infrastructure/DependencyInjection.cs)) plus a generous connect timeout, so those transient wake-up failures are retried transparently and the first user doesn't see an error. This is the database analogue of the LLM-call retries already in the app.
+
 ## Usage
 
 1. On **/tickets**, add a ticket (or use a seeded one) and click **Process with agent**.
