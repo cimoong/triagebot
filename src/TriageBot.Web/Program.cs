@@ -1,9 +1,13 @@
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using TriageBot.Core.Abstractions;
 using TriageBot.Core.Enums;
 using TriageBot.Infrastructure;
 using TriageBot.Infrastructure.Ai;
+using TriageBot.Infrastructure.Observability;
 using TriageBot.Infrastructure.Persistence;
 using TriageBot.Web.Components;
 
@@ -24,11 +28,25 @@ builder.Services.AddInfrastructure(builder.Configuration);
 // RFC 7807 ProblemDetails for unhandled errors, so the API never leaks a stack trace.
 builder.Services.AddProblemDetails();
 
-// Optional APM: enable Application Insights only when a connection string is provided
-// (env APPLICATIONINSIGHTS_CONNECTION_STRING). No connection string -> no telemetry, no cost.
-if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
+// Optional observability: export traces, metrics and logs to Azure Application Insights via the
+// Azure Monitor OpenTelemetry distro — ONLY when a connection string is provided
+// (env APPLICATIONINSIGHTS_CONNECTION_STRING). Locally, with no connection string, this whole block
+// is skipped: OpenTelemetry still records in-process (activities/meters) but nothing is exported and
+// the app does not crash. The distro also captures ILogger logs and forwards them to App Insights.
+var appInsightsConnectionString = builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
+if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
 {
-    builder.Services.AddApplicationInsightsTelemetry();
+    builder.Services.AddOpenTelemetry()
+        // Agent-level spans + the LLM chat spans (gen_ai.* incl. token usage attributes).
+        .WithTracing(tracing => tracing
+            .AddSource(TriageBotTelemetry.AgentSourceName)
+            .AddSource(TriageBotTelemetry.ChatSourceName))
+        // Token-usage and other gen_ai metrics from the chat/agent meters.
+        .WithMetrics(metrics => metrics
+            .AddMeter(TriageBotTelemetry.AgentSourceName)
+            .AddMeter(TriageBotTelemetry.ChatSourceName))
+        // Azure Monitor exporter + default ASP.NET Core / HttpClient instrumentation + log export.
+        .UseAzureMonitor(options => options.ConnectionString = appInsightsConnectionString);
 }
 
 var app = builder.Build();

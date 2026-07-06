@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using TriageBot.Core.Domain;
 using TriageBot.Core.Enums;
 using TriageBot.Infrastructure.Ai;
+using TriageBot.Infrastructure.Observability;
 
 namespace TriageBot.Infrastructure.Agent;
 
@@ -65,7 +66,12 @@ public sealed class TicketTriageAgent
             }
         };
 
-        var agent = new ChatClientAgent(chatClient, agentOptions, _loggerFactory);
+        // Wrap the agent with OpenTelemetry so each run emits an agent-level span that wraps the
+        // underlying LLM/tool spans. EnableSensitiveData=false keeps message content out of telemetry.
+        var agent = new ChatClientAgent(chatClient, agentOptions, _loggerFactory)
+            .AsBuilder()
+            .UseOpenTelemetry(TriageBotTelemetry.AgentSourceName, a => a.EnableSensitiveData = false)
+            .Build();
 
         // A fresh session is the agent's memory for this single run (holds the multi-step thread).
         var session = await agent.CreateSessionAsync(cancellationToken);

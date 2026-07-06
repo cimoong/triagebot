@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using OpenAI;
 using Polly;
 using TriageBot.Core.Enums;
+using TriageBot.Infrastructure.Observability;
 
 namespace TriageBot.Infrastructure.Ai;
 
@@ -55,6 +56,9 @@ public static class AiServiceCollectionExtensions
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
             .UseFunctionInvocation(configure: f => f.MaximumIterationsPerRequest = MaxToolIterations)
+            // Emit gen_ai.* spans + token-usage metrics per model call. EnableSensitiveData=false keeps
+            // prompt/response content (and any PII in ticket text) out of telemetry.
+            .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
             .UseLogging();
 
         // Keyed chat client: Gemini (optional). Fails with a clear message only when actually used without a key.
@@ -73,6 +77,7 @@ public static class AiServiceCollectionExtensions
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
             .UseFunctionInvocation()
+            .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
             .UseLogging();
 
         // Keyed chat client: Groq (optional). Fails with a clear message only when actually used without a key.
@@ -92,6 +97,7 @@ public static class AiServiceCollectionExtensions
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
             .UseFunctionInvocation()
+            .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
             .UseLogging();
 
         // Per-session active provider (scoped) + resolver.

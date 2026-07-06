@@ -315,6 +315,66 @@ The sample tickets are declared with EF Core's `HasData` and are inserted **by t
 
 Neon **idle-suspends** a database after inactivity and **cold-starts** it on the next connection, which can take a second or few. Without resilience, the first request after a quiet period would hit a transient connection error and fail. The app enables EF Core's retry strategy (`EnableRetryOnFailure`, in [`DependencyInjection`](src/TriageBot.Infrastructure/DependencyInjection.cs)) plus a generous connect timeout, so those transient wake-up failures are retried transparently and the first user doesn't see an error. This is the database analogue of the LLM-call retries already in the app.
 
+## Observability (Application Insights)
+
+The agent and every LLM call are instrumented with **OpenTelemetry** and exported to **Azure
+Application Insights** via the Azure Monitor distro — traces, metrics, **and** `ILogger` logs.
+
+- **Opt-in by config:** telemetry is exported only when `APPLICATIONINSIGHTS_CONNECTION_STRING`
+  is set. With no connection string (local dev) nothing is exported and the app runs normally —
+  it never crashes for lack of a monitoring backend.
+- **What's instrumented:**
+  - The **agent** run (`Microsoft.Agents.AI` OpenTelemetry) — source `TriageBot.Agent`.
+  - Each **LLM chat call** (`Microsoft.Extensions.AI` OpenTelemetry, gen_ai semantic conventions)
+    — source/meter `TriageBot.Llm`, including **token usage** (`gen_ai.usage.input_tokens` /
+    `gen_ai.usage.output_tokens`).
+  - Plus the distro's built-in ASP.NET Core / HttpClient instrumentation.
+- **No secrets / PII:** `EnableSensitiveData = false` on both the chat client and the agent, so
+  prompt/response content (and any PII in ticket text) is **not** captured — only metadata (model,
+  token counts, tool names, durations, status). API keys are never logged.
+
+### Telemetry structure
+
+One triage run produces a nested trace:
+
+```
+Agent run span            (source: TriageBot.Agent — one per ProcessTicketAsync)
+└─ LLM chat span          (source: TriageBot.Llm — one per model round-trip)
+   │  attrs: gen_ai.request.model, gen_ai.usage.input_tokens/output_tokens, ...
+   ├─ tool: record_classification
+   ├─ tool: draft_reply
+   └─ tool: escalate_to_human / save_ticket_result   (the proposed final action)
+```
+
+Because the agent uses `IChatClient` through the resolver, this works identically for **all
+providers** (Local / Gemini / Groq) — the instrumentation sits in the shared pipeline.
+
+### How to test
+
+```bash
+# 1. Point at an Application Insights resource (Azure portal > your App Insights > Connection String):
+export APPLICATIONINSIGHTS_CONNECTION_STRING="InstrumentationKey=...;IngestionEndpoint=https://...;LiveEndpoint=https://..."
+
+# 2. Run the app (or the container / ACA deployment, which reads the same env var):
+dotnet run --project src/TriageBot.Web
+
+# 3. Process a few tickets in the UI (include a Critical one to exercise escalation).
+```
+
+Then in the Azure portal, open your Application Insights resource and look at:
+
+- **Transaction search / End-to-end transaction details** → the **agent run** span with the nested
+  **LLM** and **tool** spans.
+- **Logs (KQL)** → `dependencies` for the gen_ai spans, e.g. token usage:
+  ```kusto
+  dependencies
+  | where name startswith "chat" or customDimensions has "gen_ai"
+  | project timestamp, name, duration, customDimensions
+  | order by timestamp desc
+  ```
+- **Metrics** → the `gen_ai.*` token-usage metrics from the `TriageBot.Llm` meter.
+- **Traces** → the structured `ILogger` events (run start/end, each tool, approval/reject, errors).
+
 ## Usage
 
 1. On **/tickets**, add a ticket (or use a seeded one) and click **Process with agent**.
