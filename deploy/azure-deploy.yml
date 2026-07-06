@@ -1,0 +1,118 @@
+# =============================================================================
+# OPTIONAL CI/CD — build & deploy TriageBot to Azure Container Apps on push to
+# `production`, using Azure OIDC login (no long-lived credentials in the repo).
+#
+# This workflow is DISABLED unless you opt in:
+#   - Set repository variable  ENABLE_AZURE_DEPLOY = true   (Settings > Variables), AND
+#   - Add the repository secrets listed below                (Settings > Secrets).
+#
+# To use it, move/copy this file to  .github/workflows/azure-deploy.yml
+# (kept under deploy/ here so it is documentation-only until you enable it).
+#
+# NOTHING BELOW CONTAINS REAL CREDENTIALS — every value is a ${{ secrets.* }} placeholder.
+#
+# One-time Azure setup (done once, outside this repo):
+#   1. Create an Entra app registration + federated credential for GitHub OIDC, and
+#      grant it Contributor on the target subscription/resource group.
+#      docs: https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect
+#   2. Add these REPOSITORY SECRETS:
+#        AZURE_CLIENT_ID           - the app registration (client) id
+#        AZURE_TENANT_ID           - your Entra tenant id
+#        AZURE_SUBSCRIPTION_ID     - target subscription id
+#        GROQ_API_KEY              - Groq API key
+#        DB_CONNECTION_STRING      - Neon/Postgres connection string
+#        APPINSIGHTS_CONNECTION_STRING - (optional) App Insights connection string
+#   3. Add REPOSITORY VARIABLE  ENABLE_AZURE_DEPLOY = true  to turn this on.
+# =============================================================================
+
+name: Deploy to Azure Container Apps (optional)
+
+on:
+  push:
+    branches: [production]
+  workflow_dispatch: {}      # allow manual runs from the Actions tab
+
+# Required for OIDC login to Azure (request a federated token).
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: triagebot-rg
+  LOCATION: southeastasia
+  APP_NAME: triagebot
+  ENVIRONMENT_NAME: triagebot-env
+
+jobs:
+  deploy:
+    # Opt-in guard: the job is skipped unless you set this repo variable to "true".
+    if: ${{ vars.ENABLE_AZURE_DEPLOY == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC — no stored passwords)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure Container Apps extension
+        run: az extension add --name containerapp --upgrade --only-show-errors
+
+      - name: Create resource group (idempotent)
+        run: az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+
+      # NOTE: `--source .` builds via ACR Tasks (cloud build). If your subscription blocks ACR
+      # Tasks (TasksOperationsNotAllowed on Free/Trial/Student), mirror deploy-azure.ps1 instead:
+      # `docker build` on the runner -> `az acr login` -> `docker push` -> `up --image <acr>/...`.
+      - name: Build from source and deploy the Container App
+        run: |
+          az containerapp up \
+            --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --location "$LOCATION" \
+            --environment "$ENVIRONMENT_NAME" \
+            --source . \
+            --ingress external \
+            --target-port 8080 \
+            --output none
+
+      - name: Set secrets (values come from repo secrets, never inline)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          APPINS: ${{ secrets.APPINSIGHTS_CONNECTION_STRING }}
+        run: |
+          SECRETS=(groq-key="$GROQ_API_KEY" db-conn="$DB_CONNECTION_STRING")
+          if [ -n "$APPINS" ]; then SECRETS+=(appins-conn="$APPINS"); fi
+          az containerapp secret set --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --secrets "${SECRETS[@]}" --output none
+
+      - name: Set environment variables (reference the secrets)
+        env:
+          APPINS: ${{ secrets.APPINSIGHTS_CONNECTION_STRING }}
+        run: |
+          ENVVARS=(Groq__ApiKey=secretref:groq-key \
+                   ConnectionStrings__TriageBotDb=secretref:db-conn \
+                   Ai__DefaultProvider=Groq \
+                   RunMigrationsOnStartup=true)
+          if [ -n "$APPINS" ]; then ENVVARS+=(APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appins-conn); fi
+          az containerapp update --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --set-env-vars "${ENVVARS[@]}" --output none
+
+      - name: Scale rules (min 0 / max 1) and sticky sessions (Blazor Server)
+        run: |
+          az containerapp update --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --min-replicas 0 --max-replicas 1 --output none
+          az containerapp ingress sticky-sessions set --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" --affinity sticky --output none
+
+      - name: Print app URL
+        run: |
+          FQDN=$(az containerapp show --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --query "properties.configuration.ingress.fqdn" --output tsv)
+          echo "App URL: https://$FQDN"
+          echo "https://$FQDN" >> "$GITHUB_STEP_SUMMARY"
