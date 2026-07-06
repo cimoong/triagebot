@@ -238,6 +238,32 @@ dotnet run --project src/TriageBot.Web
 
 Open <http://localhost:5227> and go to **Tickets**.
 
+## Run the production image locally (Docker Compose)
+
+Before deploying to the cloud, you can run the **containerized** app (built from the [`Dockerfile`](Dockerfile)) together with Postgres to verify the production image end-to-end. This uses [`docker-compose.prod.yml`](docker-compose.prod.yml) — the app and database talk over an internal network, only the app publishes a port (**8080**), and all configuration comes from environment variables (12-factor).
+
+```bash
+# 1. Create your local env file from the template and edit it (set Groq__ApiKey).
+cp deploy/.env.example .env
+
+# 2. Build the image and start app + database.
+docker compose -f docker-compose.prod.yml up --build
+
+# 3. Open the app.
+#    http://localhost:8080
+```
+
+- The `.env` file lives at the repo root, is **git-ignored**, and holds your real key — never commit it. Only [`deploy/.env.example`](deploy/.env.example) (placeholders) is committed.
+- **Migrations** are applied automatically on startup because the compose file sets `RunMigrationsOnStartup=true`, so the schema (and seeded sample tickets) is ready immediately. The app waits for Postgres to be healthy (`depends_on: condition: service_healthy`) before migrating. In a real deployment, set this to `false` and run migrations as a separate step/job.
+- Data persists in the named volume `triagebot-pgdata`. Tear everything down with `docker compose -f docker-compose.prod.yml down` (add `-v` to also delete the data).
+
+**Quick verification:**
+
+1. Open <http://localhost:8080> → **Tickets**.
+2. Confirm Groq is selected in the header (it is the default here), or pick **Groq (cloud)**.
+3. **Add ticket** → **Process with agent** → watch the timeline (`record_classification` → `draft_reply` → proposed final action). Seeing those tool steps confirms tool calling works against Groq in the container.
+4. **Approve** (or **Reject**) the proposed action and confirm the status changes.
+
 ## Usage
 
 1. On **/tickets**, add a ticket (or use a seeded one) and click **Process with agent**.
