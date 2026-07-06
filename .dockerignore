@@ -1,0 +1,44 @@
+# Keep the build context small and free of local/dev artifacts and secrets.
+
+# Build outputs
+**/bin/
+**/obj/
+**/out/
+**/publish/
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+**/*.user
+**/*.suo
+
+# Not needed to build/run the Web app
+tests/
+eval/
+docs/
+*.md
+LICENSE
+
+# Local dev configuration & secrets — must never be baked into the image
+**/appsettings.Development.json
+**/*.Development.json
+**/secrets.json
+**/*.pfx
+**/.env
+**/.env.*
+
+# Docker / compose files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Misc
+**/.DS_Store
+**/Thumbs.db

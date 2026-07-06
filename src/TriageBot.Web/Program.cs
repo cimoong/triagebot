@@ -1,11 +1,18 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using TriageBot.Core.Abstractions;
 using TriageBot.Core.Enums;
 using TriageBot.Infrastructure;
 using TriageBot.Infrastructure.Ai;
+using TriageBot.Infrastructure.Persistence;
 using TriageBot.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Configuration is layered by the default host: appsettings*.json -> environment variables -> ...
+// so every setting below can be supplied via env in a container using the "__" separator, e.g.
+// ConnectionStrings__TriageBotDb, Groq__ApiKey, Ai__DefaultProvider. Nothing here reads config any
+// other way, so there is no path that bypasses environment variables.
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
@@ -17,7 +24,27 @@ builder.Services.AddInfrastructure(builder.Configuration);
 // RFC 7807 ProblemDetails for unhandled errors, so the API never leaks a stack trace.
 builder.Services.AddProblemDetails();
 
+// Optional APM: enable Application Insights only when a connection string is provided
+// (env APPLICATIONINSIGHTS_CONNECTION_STRING). No connection string -> no telemetry, no cost.
+if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
+{
+    builder.Services.AddApplicationInsightsTelemetry();
+}
+
 var app = builder.Build();
+
+// Optional, opt-in EF Core migration on startup (env RunMigrationsOnStartup=true; default false).
+// Trade-off: convenient for a single-instance demo, but risky in production — concurrent instances can
+// race the migration, and app identities usually shouldn't hold schema-change rights. Prefer running
+// `dotnet ef database update` (or a dedicated migration job/init container) as a separate deploy step.
+if (app.Configuration.GetValue("RunMigrationsOnStartup", false))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<TriageBotDbContext>();
+    app.Logger.LogInformation("RunMigrationsOnStartup=true — applying EF Core migrations...");
+    await db.Database.MigrateAsync();
+    app.Logger.LogInformation("EF Core migrations applied.");
+}
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
@@ -45,7 +72,7 @@ app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, Ca
     if (string.IsNullOrWhiteSpace(provider))
         selected = resolver.ActiveProvider;
     else if (!Enum.TryParse(provider, ignoreCase: true, out selected))
-        return Results.BadRequest(new { error = $"Unknown provider '{provider}'. Use 'local' or 'gemini'." });
+        return Results.BadRequest(new { error = $"Unknown provider '{provider}'. Use 'local', 'gemini' or 'groq'." });
 
     try
     {
