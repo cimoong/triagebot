@@ -1,4 +1,6 @@
+using System.Threading.RateLimiting;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using OpenTelemetry.Metrics;
@@ -28,6 +30,32 @@ builder.Services.AddInfrastructure(builder.Configuration);
 
 // RFC 7807 ProblemDetails for unhandled errors, so the API never leaks a stack trace.
 builder.Services.AddProblemDetails();
+
+// Guardrail: a simple fixed-window rate limiter on the triage endpoint. Triage is the only path that
+// spends LLM tokens, so a burst of requests (a stuck client, a load test, or abuse) could otherwise drain
+// the shared Groq free-tier quota in seconds. The window is GLOBAL (one bucket for the whole app) because
+// the resource being protected — the upstream provider quota — is shared, not per-user. Limits are
+// configurable via env (RateLimit__ProcessPermitLimit / RateLimit__ProcessWindowSeconds).
+const string ProcessRateLimitPolicy = "process";
+var processPermitLimit = builder.Configuration.GetValue("RateLimit:ProcessPermitLimit", 15);
+var processWindowSeconds = builder.Configuration.GetValue("RateLimit:ProcessWindowSeconds", 60);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter(ProcessRateLimitPolicy, o =>
+    {
+        o.PermitLimit = processPermitLimit;
+        o.Window = TimeSpan.FromSeconds(processWindowSeconds);
+        o.QueueLimit = 0; // reject immediately rather than queueing — a slow queue would just pile up.
+    });
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.Headers.RetryAfter = processWindowSeconds.ToString();
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            new { error = "Too many triage requests. Please slow down to protect the shared LLM quota.", rateLimited = true },
+            cancellationToken);
+    };
+});
 
 // Optional observability: export traces, metrics and logs to Azure Application Insights via the
 // Azure Monitor OpenTelemetry distro — ONLY when a connection string is provided
@@ -88,6 +116,8 @@ if (!app.Environment.IsDevelopment())
 app.UseStatusCodePages();
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
+
+app.UseRateLimiter();
 
 app.UseAntiforgery();
 
@@ -162,7 +192,7 @@ app.MapPost("/api/tickets/{id:guid}/process", async (
             new { ticketId = id, error = message },
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
-});
+}).RequireRateLimiting(ProcessRateLimitPolicy);
 
 // Human-in-the-loop: approve the pending final action (optionally editing the draft first).
 app.MapPost("/api/tickets/{id:guid}/approve", async (

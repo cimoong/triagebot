@@ -54,5 +54,29 @@
     "expectedCategory": "Other",
     "expectedUrgency": "Critical",
     "shouldEscalate": true
+  },
+  {
+    "subject": "New starter needs a mailbox before Monday",
+    "body": "We have a new hire joining on Monday morning. Could you please create their email account and add them to the sales distribution list? Not urgent today but must be ready before they arrive.",
+    "requesterEmail": "hr.team@contoso.com",
+    "expectedCategory": "Email",
+    "expectedUrgency": "Low",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "Second monitor not detected after docking",
+    "body": "When I dock my laptop the external second monitor is no longer detected. The first screen works. I've reseated the cable and it still only shows one display. I can manage on one screen for now.",
+    "requesterEmail": "d.wallace@contoso.com",
+    "expectedCategory": "Hardware",
+    "expectedUrgency": "Medium",
+    "shouldEscalate": false
+  },
+  {
+    "subject": "Can't log in to the finance portal at all",
+    "body": "My single sign-on works for everything else but the finance portal rejects me with 'access denied' since the last update. I need this to close the month-end books which are due tomorrow.",
+    "requesterEmail": "f.mensah@contoso.com",
+    "expectedCategory": "AccountAccess",
+    "expectedUrgency": "High",
+    "shouldEscalate": false
   }
 ]
