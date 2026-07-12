@@ -197,6 +197,10 @@ static ServiceProvider BuildServices(AiProvider provider, bool verbose)
     services.AddLogging(b =>
     {
         b.AddSimpleConsole(o => o.SingleLine = true).SetMinimumLevel(LogLevel.Warning);
+        // Silence the LLM client's own error/exception logging: on a provider timeout/429 it dumps a huge
+        // AggregateException stack trace, but the eval already reports each failure as a one-line "FAILED: …"
+        // (and tallies it in the summary), so the trace is pure noise here.
+        b.AddFilter("Microsoft.Extensions.AI", LogLevel.None);
         // In verbose mode, let just the triage service's Information logs through (the per-run cost line)
         // without drowning the output in EF Core / HttpClient chatter.
         if (verbose)
