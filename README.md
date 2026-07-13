@@ -594,12 +594,25 @@ dotnet run --project eval/TriageBot.Eval -- groq
 dotnet run --project eval/TriageBot.Eval -- local path/to/your-tickets.json
 ```
 
-> **Note on Groq free-tier limits.** Groq's free tier enforces a low **tokens-per-minute (TPM)** limit (≈6,000 for the 8B model, ≈12,000 for the 70B). A single **interactive** ticket in the app is fine, but the **batch eval** fires several large 70B tool-loop calls per ticket, so back-to-back tickets burst past TPM and calls start returning **HTTP 429** (or get queued/stalled under load). Use `--delay <seconds>` to pace tickets, shrink the dataset, or run against **Gemini / local** (looser limits) for a clean full pass. Verify your own limits from the `x-ratelimit-*` response headers or the [Groq console](https://console.groq.com) → *Settings → Limits*.
+**Flags:**
+
+| Flag | Effect |
+| ---- | ------ |
+| `--classify-only` | Run only the lightweight classification call (category + urgency); skip the heavy 70B drafting/escalation phase. **Fast and reliable on free tiers** — recommended for Groq. |
+| `--delay <seconds>` | Pause between tickets to stay under a per-minute token limit (full pipeline on a free tier). |
+| `--verbose` | Print the per-run `Run … cost — … total_tokens=… latency_ms=…` line (for the cost table). |
+
+> **Note on Groq free-tier limits.** Groq's free tier enforces a low **tokens-per-minute (TPM)** limit (≈6,000 for the 8B model, ≈12,000 for the 70B). A single **interactive** ticket in the app is fine, but the full-pipeline **batch eval** fires several large 70B tool-loop calls per ticket, so back-to-back tickets burst past TPM and calls time out / return **HTTP 429**. Two ways around it:
 >
 > ```bash
-> # Pace 30s between tickets to stay under the per-minute token limit
+> # Reliable on the free tier: measures classification (category + urgency) only.
+> dotnet run --project eval/TriageBot.Eval -- groq --classify-only
+>
+> # Full pipeline (incl. escalation), paced to stay under the per-minute limit — slower, may still 429.
 > dotnet run --project eval/TriageBot.Eval -- groq --delay 30
 > ```
+>
+> Verify your own limits from the `x-ratelimit-*` response headers or the [Groq console](https://console.groq.com) → *Settings → Limits*.
 
 Each case in `tickets.json` carries `expectedCategory`, `expectedUrgency`, and `shouldEscalate`. The
 runner prints a per-ticket line and a summary:
@@ -615,20 +628,35 @@ Avg latency:         ___ ms
 
 ### Results (Groq)
 
-Paste your latest run here. Run `dotnet run --project eval/TriageBot.Eval -- groq` and copy the summary:
+Measured run — **classification** phase (Groq `llama-3.1-8b-instant`), 10-case dataset, via
+`dotnet run --project eval/TriageBot.Eval -- groq --classify-only`:
 
 | Metric | Score |
 | ------ | ----- |
-| Provider / model | Groq — `llama-3.1-8b-instant` (classify) + `llama-3.3-70b-versatile` (draft) |
-| Category accuracy | _/10 |
-| Urgency accuracy | _/10 |
-| Escalation accuracy | _/10 |
-| Avg latency | _ ms |
+| Provider / model | Groq — `llama-3.1-8b-instant` (classification) |
+| Category accuracy | **9 / 10** |
+| Urgency accuracy | **8 / 10** |
+| Escalation accuracy | not measured in classify-only mode¹ |
+| Avg latency (classification call) | **591 ms** over 10/10 successful runs |
 | Dataset | `eval/tickets.json` (10 labelled cases) |
 
-> **Methodology.** Each case in [`eval/tickets.json`](eval/tickets.json) carries a ground-truth `expectedCategory`, `expectedUrgency`, and `shouldEscalate`. The harness runs the **real** agent (same code path as the app: 8B classify → 70B draft → propose action) over each ticket against a fresh in-memory DB, then compares the persisted category/urgency and whether the agent proposed *escalate* to the labels. Accuracy is exact-match per field; latency is wall-clock per successful run.
+The two misses were both edge cases: an office-wide outage rated `High` vs. the labelled `Critical`,
+and a ransomware note classified `Software`/`High` vs. `Other`/`Critical`.
+
+> ¹ **Why classify-only.** The full pipeline's drafting/escalation phase makes several large
+> `llama-3.3-70b-versatile` tool-calling calls per ticket. On Groq's **free tier** (tokens-per-minute
+> cap) a back-to-back batch bursts past that limit and calls time out / return 429. Classification is a
+> single small call, so `--classify-only` runs fast and reliably and yields the category/urgency numbers
+> above. To also measure the escalation decision, run the full pipeline on a paid tier (or paced:
+> `-- groq --delay 30`), or against Gemini/local.
 >
-> **Honesty note:** the bundled dataset is 10 illustrative cases (see [Limitations](#limitations)) — a sanity check, not a statistically-significant benchmark. Also, Groq's free tier caps **tokens-per-minute**, and the batch eval bursts several 70B calls per ticket — so a back-to-back run can hit HTTP 429 (failed runs). Pace it with `--delay 30`, use a smaller subset, or run against Gemini/local for a clean full pass.
+> **Methodology.** Each case in [`eval/tickets.json`](eval/tickets.json) carries a ground-truth
+> `expectedCategory`, `expectedUrgency`, and `shouldEscalate`. The harness runs the **real** code path
+> against a fresh in-memory DB and compares the persisted values to the labels (exact-match per field);
+> latency is wall-clock per successful run.
+>
+> **Honesty note:** the dataset is 10 illustrative cases (see [Limitations](#limitations)) — a sanity
+> check, not a statistically-significant benchmark.
 
 ## Deployment
 
