@@ -152,7 +152,12 @@ public static class AiServiceCollectionExtensions
         {
             Endpoint = new Uri(endpoint),
             NetworkTimeout = httpClient.Timeout,
-            Transport = new HttpClientPipelineTransport(httpClient)
+            Transport = new HttpClientPipelineTransport(httpClient),
+            // Disable the OpenAI SDK's own retry policy: our Polly resilience handler (AddLlmResilience) is the
+            // single retry layer. Without this, the SDK retries on top of Polly, so one stalled request under a
+            // provider rate limit becomes 4 SDK tries x the HttpClient timeout (e.g. ~8 min) instead of failing
+            // fast. maxRetries:0 makes a rate-limited/slow call surface quickly.
+            RetryPolicy = new ClientRetryPolicy(maxRetries: 0)
         };
 
         return new OpenAIClient(new ApiKeyCredential(apiKey), options)

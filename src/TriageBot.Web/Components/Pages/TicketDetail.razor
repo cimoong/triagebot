@@ -5,6 +5,7 @@
 @inject ITicketTriageService Triage
 @inject ITicketApprovalService Approval
 @inject NavigationManager Nav
+@inject IAiClientResolver Resolver
 
 <PageTitle>Ticket</PageTitle>
 
@@ -102,7 +103,12 @@ else
         </button>
         @if (_processing)
         {
-            <span class="ms-2 text-muted small">This may take a while on a local model.</span>
+            <span class="ms-2 text-muted small">
+                Running on <strong>@Resolver.ActiveProvider</strong>.
+                @(Resolver.ActiveProvider == AiProvider.Local
+                    ? "A local model can take a while on CPU."
+                    : "If the provider is rate-limiting, this fails within ~45s with a message — you won't be left waiting.")
+            </span>
         }
     </div>
 

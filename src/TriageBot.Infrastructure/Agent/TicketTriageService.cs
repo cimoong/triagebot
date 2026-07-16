@@ -98,6 +98,18 @@ public sealed class TicketTriageService : ITicketTriageService
                     ex, isRateLimited: true);
             }
 
+            if (IsTimeout(ex, cancellationToken))
+            {
+                // A request timed out (not a user cancel). On a cloud free tier this usually means the provider
+                // is throttling and holding the connection. Surface it fast so the user doesn't keep waiting.
+                throw new TriageRunException(
+                    $"The '{provider}' AI provider took too long to respond (timed out). " +
+                    (provider == AiProvider.Local
+                        ? "The local model may be slow on this hardware; try a smaller model."
+                        : "Its free tier is likely rate-limiting right now — wait a moment and try again, or switch provider."),
+                    ex, isRateLimited: true);
+            }
+
             throw new TriageRunException(
                 $"The triage agent could not complete. Is the '{provider}' AI provider running and reachable?", ex);
         }
@@ -227,6 +239,26 @@ public sealed class TicketTriageService : ITicketTriageService
             if (e is ClientResultException { Status: 429 })
                 return true;
             if (e is AggregateException agg && agg.InnerExceptions.Any(inner => IsRateLimit(inner)))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// True if the failure is a request timeout (TaskCanceled/Timeout from the HTTP/pipeline timeout) rather
+    /// than a caller cancellation. Walks inner/AggregateException. Excludes the case where our own token was
+    /// cancelled, so a genuine caller cancel is not mislabelled as a provider timeout.
+    /// </summary>
+    private static bool IsTimeout(Exception? ex, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return false;
+
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is TimeoutException or TaskCanceledException or OperationCanceledException)
+                return true;
+            if (e is AggregateException agg && agg.InnerExceptions.Any(inner => IsTimeout(inner, cancellationToken)))
                 return true;
         }
         return false;
