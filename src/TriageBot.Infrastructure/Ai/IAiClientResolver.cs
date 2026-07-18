@@ -17,4 +17,10 @@ public interface IAiClientResolver
 
     /// <summary>Returns the chat client for the session's active provider.</summary>
     IChatClient GetActiveChatClient();
+
+    /// <summary>
+    /// Returns the chat client used for lightweight classification. For Groq this is a small, cached
+    /// model (cost optimization); for single-model providers it is the same as the main client.
+    /// </summary>
+    IChatClient GetClassificationChatClient(AiProvider provider);
 }

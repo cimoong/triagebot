@@ -1,0 +1,63 @@
+# Runs the CONTAINERIZED app (built from Dockerfile) together with Postgres,
+# to verify the production image locally before deploying to the cloud.
+#
+#   1. cp deploy/.env.example .env   # then edit .env (set Groq__ApiKey)
+#   2. docker compose -f docker-compose.prod.yml up --build
+#   3. open http://localhost:8080
+#
+# All values come from the root .env file (auto-loaded by Compose). Only the app
+# publishes a host port; the database is reachable only on the internal network.
+name: triagebot-prod
+
+services:
+  db:
+    image: postgres:17.5
+    container_name: triagebot-prod-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-triagebot}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - triagebot-pgdata:/var/lib/postgresql/data
+    networks:
+      - triagebot-net
+    # No host port published: the DB is internal-only (the app reaches it as "db:5432").
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-triagebot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: triagebot:local
+    container_name: triagebot-prod-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy   # app waits until Postgres reports healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Connection string points at the "db" service on the internal network.
+      ConnectionStrings__TriageBotDb: ${ConnectionStrings__TriageBotDb:-Host=db;Port=5432;Database=triagebot;Username=postgres;Password=postgres}
+      Ai__DefaultProvider: ${Ai__DefaultProvider:-Groq}
+      Groq__ApiKey: ${Groq__ApiKey:-}
+      # Apply EF Core migrations on startup so the schema is ready immediately (single
+      # instance locally). Set to false and run migrations as a separate step in prod.
+      RunMigrationsOnStartup: ${RunMigrationsOnStartup:-true}
+      APPLICATIONINSIGHTS_CONNECTION_STRING: ${APPLICATIONINSIGHTS_CONNECTION_STRING:-}
+    ports:
+      - "8080:8080"
+    networks:
+      - triagebot-net
+
+networks:
+  triagebot-net:
+    driver: bridge
+
+volumes:
+  triagebot-pgdata:

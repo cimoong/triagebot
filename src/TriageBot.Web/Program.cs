@@ -1,11 +1,25 @@
+using System.Threading.RateLimiting;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using TriageBot.Core.Abstractions;
 using TriageBot.Core.Enums;
 using TriageBot.Infrastructure;
+using TriageBot.Infrastructure.Agent;
 using TriageBot.Infrastructure.Ai;
+using TriageBot.Infrastructure.Observability;
+using TriageBot.Infrastructure.Persistence;
 using TriageBot.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Configuration is layered by the default host: appsettings*.json -> environment variables -> ...
+// so every setting below can be supplied via env in a container using the "__" separator, e.g.
+// ConnectionStrings__TriageBotDb, Groq__ApiKey, Ai__DefaultProvider. Nothing here reads config any
+// other way, so there is no path that bypasses environment variables.
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
@@ -17,7 +31,79 @@ builder.Services.AddInfrastructure(builder.Configuration);
 // RFC 7807 ProblemDetails for unhandled errors, so the API never leaks a stack trace.
 builder.Services.AddProblemDetails();
 
+// Guardrail: a simple fixed-window rate limiter on the triage endpoint. Triage is the only path that
+// spends LLM tokens, so a burst of requests (a stuck client, a load test, or abuse) could otherwise drain
+// the shared Groq free-tier quota in seconds. The window is GLOBAL (one bucket for the whole app) because
+// the resource being protected — the upstream provider quota — is shared, not per-user. Limits are
+// configurable via env (RateLimit__ProcessPermitLimit / RateLimit__ProcessWindowSeconds).
+const string ProcessRateLimitPolicy = "process";
+var processPermitLimit = builder.Configuration.GetValue("RateLimit:ProcessPermitLimit", 15);
+var processWindowSeconds = builder.Configuration.GetValue("RateLimit:ProcessWindowSeconds", 60);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter(ProcessRateLimitPolicy, o =>
+    {
+        o.PermitLimit = processPermitLimit;
+        o.Window = TimeSpan.FromSeconds(processWindowSeconds);
+        o.QueueLimit = 0; // reject immediately rather than queueing — a slow queue would just pile up.
+    });
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.Headers.RetryAfter = processWindowSeconds.ToString();
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            new { error = "Too many triage requests. Please slow down to protect the shared LLM quota.", rateLimited = true },
+            cancellationToken);
+    };
+});
+
+// Optional observability: export traces, metrics and logs to Azure Application Insights via the
+// Azure Monitor OpenTelemetry distro — ONLY when a connection string is provided
+// (env APPLICATIONINSIGHTS_CONNECTION_STRING). Locally, with no connection string, this whole block
+// is skipped: OpenTelemetry still records in-process (activities/meters) but nothing is exported and
+// the app does not crash. The distro also captures ILogger logs and forwards them to App Insights.
+var appInsightsConnectionString = builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
+if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
+{
+    builder.Services.AddOpenTelemetry()
+        // Agent-level spans + the LLM chat spans (gen_ai.* incl. token usage attributes).
+        .WithTracing(tracing => tracing
+            .AddSource(TriageBotTelemetry.AgentSourceName)
+            .AddSource(TriageBotTelemetry.ChatSourceName))
+        // Token-usage and other gen_ai metrics from the chat/agent meters.
+        .WithMetrics(metrics => metrics
+            .AddMeter(TriageBotTelemetry.AgentSourceName)
+            .AddMeter(TriageBotTelemetry.ChatSourceName))
+        // Azure Monitor exporter + default ASP.NET Core / HttpClient instrumentation + log export.
+        .UseAzureMonitor(options => options.ConnectionString = appInsightsConnectionString);
+}
+
 var app = builder.Build();
+
+// Log which database this instance targets — host + database only, never the password —
+// so it's obvious at a glance whether it's pointing at local Postgres or a managed one (Neon).
+{
+    var rawConnectionString = app.Configuration.GetConnectionString("TriageBotDb");
+    if (!string.IsNullOrWhiteSpace(rawConnectionString))
+    {
+        var b = new Npgsql.NpgsqlConnectionStringBuilder(NpgsqlConnectionString.Normalize(rawConnectionString));
+        app.Logger.LogInformation("Database target: Host={Host}; Port={Port}; Database={Database}; SslMode={SslMode}",
+            b.Host, b.Port, b.Database, b.SslMode);
+    }
+}
+
+// Optional, opt-in EF Core migration on startup (env RunMigrationsOnStartup=true; default false).
+// Trade-off: convenient for a single-instance demo, but risky in production — concurrent instances can
+// race the migration, and app identities usually shouldn't hold schema-change rights. Prefer running
+// `dotnet ef database update` (or a dedicated migration job/init container) as a separate deploy step.
+if (app.Configuration.GetValue("RunMigrationsOnStartup", false))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<TriageBotDbContext>();
+    app.Logger.LogInformation("RunMigrationsOnStartup=true — applying EF Core migrations...");
+    await db.Database.MigrateAsync();
+    app.Logger.LogInformation("EF Core migrations applied.");
+}
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
@@ -30,6 +116,8 @@ if (!app.Environment.IsDevelopment())
 app.UseStatusCodePages();
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
+
+app.UseRateLimiter();
 
 app.UseAntiforgery();
 
@@ -45,7 +133,7 @@ app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, Ca
     if (string.IsNullOrWhiteSpace(provider))
         selected = resolver.ActiveProvider;
     else if (!Enum.TryParse(provider, ignoreCase: true, out selected))
-        return Results.BadRequest(new { error = $"Unknown provider '{provider}'. Use 'local' or 'gemini'." });
+        return Results.BadRequest(new { error = $"Unknown provider '{provider}'. Use 'local', 'gemini' or 'groq'." });
 
     try
     {
@@ -74,8 +162,9 @@ app.MapGet("/health/ai", async (string? provider, IAiClientResolver resolver, Ca
 
 // Run the triage agent over a ticket. T5: executes immediately (no approval gate yet — added in T6).
 app.MapPost("/api/tickets/{id:guid}/process", async (
-    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory) =>
+    Guid id, ITicketTriageService triage, ILoggerFactory loggerFactory, HttpContext httpContext) =>
 {
+    var logger = loggerFactory.CreateLogger("TicketProcessing");
     try
     {
         // Deliberately not tied to the request-abort token: a triage run mutates state and may pause for
@@ -85,15 +174,25 @@ app.MapPost("/api/tickets/{id:guid}/process", async (
             ? Results.NotFound(new { error = $"Ticket {id} was not found." })
             : Results.Ok(result);
     }
+    catch (TriageRunException ex) when (ex.IsRateLimited)
+    {
+        // The provider is reachable but its rate/token quota was exceeded — 429, not a 503 outage.
+        logger.LogWarning(ex, "Triage run for ticket {TicketId} hit the provider rate limit.", id);
+        httpContext.Response.Headers["Retry-After"] = "10";
+        return Results.Json(
+            new { ticketId = id, error = ex.Message, rateLimited = true },
+            statusCode: StatusCodes.Status429TooManyRequests);
+    }
     catch (Exception ex)
     {
-        loggerFactory.CreateLogger("TicketProcessing")
-            .LogError(ex, "Triage run failed for ticket {TicketId}.", id);
+        logger.LogError(ex, "Triage run failed for ticket {TicketId}.", id);
+        var message = ex is TriageRunException ? ex.Message
+            : $"The triage agent could not complete. Is the AI provider running? ({ex.Message})";
         return Results.Json(
-            new { ticketId = id, error = $"The triage agent could not complete. Is the AI provider running? ({ex.Message})" },
+            new { ticketId = id, error = message },
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
-});
+}).RequireRateLimiting(ProcessRateLimitPolicy);
 
 // Human-in-the-loop: approve the pending final action (optionally editing the draft first).
 app.MapPost("/api/tickets/{id:guid}/approve", async (

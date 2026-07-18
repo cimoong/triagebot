@@ -3,6 +3,7 @@
 @inject AiProviderState ProviderState
 @inject IOptions<LocalAiOptions> LocalOptions
 @inject IOptions<GeminiOptions> GeminiOptions
+@inject IOptions<GroqOptions> GroqOptions
 @inject IHttpClientFactory HttpClientFactory
 
 <div class="d-flex align-items-center gap-2">
@@ -10,16 +11,21 @@
     <select class="form-select form-select-sm" style="width:auto" value="@ProviderState.Current" @onchange="OnProviderChanged">
         <option value="@AiProvider.Local">Local (Ollama)</option>
         <option value="@AiProvider.Gemini">Gemini (cloud)</option>
+        <option value="@AiProvider.Groq">Groq (cloud)</option>
     </select>
 
     <span class="badge bg-dark border">
-        @if (ProviderState.Current == AiProvider.Local)
+        @switch (ProviderState.Current)
         {
-            <span>Local: @LocalOptions.Value.ChatModel</span>
-        }
-        else
-        {
-            <span>Gemini: @GeminiOptions.Value.ChatModel</span>
+            case AiProvider.Local:
+                <span>Local: @LocalOptions.Value.ChatModel</span>
+                break;
+            case AiProvider.Gemini:
+                <span>Gemini: @GeminiOptions.Value.ChatModel</span>
+                break;
+            case AiProvider.Groq:
+                <span>Groq: @GroqOptions.Value.ChatModel</span>
+                break;
         }
     </span>
 

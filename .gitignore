@@ -62,3 +62,9 @@ Thumbs.db
 
 # Personal interview-prep notes (kept local, not part of the public repo)
 docs/TriageBot - Panduan Interview.docx
+
+# Local environment files with real config/secrets (never commit; .env.example is fine)
+.env
+deploy/.env
+# ...but DO track the placeholder template (overrides the ".env.*" rule above)
+!deploy/.env.example

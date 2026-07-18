@@ -35,3 +35,24 @@ public sealed class GeminiOptions
 
     public int TimeoutSeconds { get; set; } = 120;
 }
+
+/// <summary>Groq provider settings (config section "Groq"). ApiKey comes from user-secrets/env — never commit it.</summary>
+public sealed class GroqOptions
+{
+    public const string Section = "Groq";
+
+    public string ApiKey { get; set; } = string.Empty;
+
+    /// <summary>Main tool-calling model used for triage.</summary>
+    public string ChatModel { get; set; } = "llama-3.3-70b-versatile";
+
+    /// <summary>
+    /// Optional lighter/cheaper model reserved for a future cost optimization (e.g. running
+    /// classification on a small model). Not wired into the agent yet.
+    /// </summary>
+    public string ClassificationModel { get; set; } = "llama-3.1-8b-instant";
+
+    public string Endpoint { get; set; } = "https://api.groq.com/openai/v1";
+
+    public int TimeoutSeconds { get; set; } = 120;
+}
