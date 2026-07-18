@@ -3,10 +3,9 @@
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![Blazor Server](https://img.shields.io/badge/Blazor-Server-512BD4?logo=blazor&logoColor=white)
 ![Microsoft Agent Framework](https://img.shields.io/badge/Microsoft%20Agent%20Framework-Agents.AI-0078D4)
-![EF Core 10](https://img.shields.io/badge/EF%20Core-10-512BD4)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-4169E1?logo=postgresql&logoColor=white)
 ![LLM](https://img.shields.io/badge/LLM-Ollama%20%7C%20Gemini%20%7C%20Groq-000000?logo=ollama&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Container%20Apps-2496ED?logo=docker&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Render%20%2B%20Azure-2496ED?logo=docker&logoColor=white)
 ![Observability](https://img.shields.io/badge/Observability-App%20Insights%20%2B%20OpenTelemetry-6E4C96)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
