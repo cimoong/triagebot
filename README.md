@@ -12,13 +12,13 @@
 
 **An AI agent that triages IT support tickets — read, classify, draft a reply, and resolve or escalate, with a human approving every final action.**
 
-TriageBot is a production-minded .NET 10 sample that shows how to build a *real* LLM **agent** (not a chatbot): it reasons over a ticket, calls tools to mutate state, records every step for audit, and pauses for human approval before doing anything irreversible. It runs against a **local model (Ollama)** or a **cloud model (Gemini or Groq)**, switchable at runtime, and ships with the production concerns wired in: **input validation, rate limiting, prompt-injection mitigations, cost/token optimization, OpenTelemetry tracing, and a Docker → Azure Container Apps → Neon deployment path.**
+TriageBot is a production-minded .NET 10 sample that shows how to build a *real* LLM **agent** (not a chatbot): it reasons over a ticket, calls tools to mutate state, records every step for audit, and pauses for human approval before doing anything irreversible. It runs against a **local model (Ollama)** or a **cloud model (Gemini or Groq)**, switchable at runtime, and ships with the production concerns wired in: **input validation, rate limiting, prompt-injection mitigations, cost/token optimization, OpenTelemetry tracing, and a Docker deployment path — portable across Azure Container Apps and Render — backed by Neon.**
 
 > ⚠️ This is a portfolio MVP built to demonstrate engineering judgement around agents, tool calling, and human-in-the-loop design — not a finished product. See [Limitations](#limitations).
 
 ### 🔗 Live demo
 
-**Try it:** [`triagebot.politeocean-60f73750.southeastasia.azurecontainerapps.io`](https://triagebot.politeocean-60f73750.southeastasia.azurecontainerapps.io/) &nbsp;·&nbsp; *(hosted on Azure Container Apps — scales to zero, so the first request after idle may cold-start for a few seconds.)*
+**Try it:** [`triagebot-o137.onrender.com`](https://triagebot-o137.onrender.com/) &nbsp;·&nbsp; *(hosted on Render's free tier — the app sleeps after ~15 min idle, and Neon suspends too, so the **first request after idle can take ~30-60s** to wake both up. This is handled with retries, not an error — just a slow first load; subsequent requests are fast.)*
 
 > **To try it:** open the link → **Tickets** → **Add ticket** (or use a seeded one) → **Process with agent** → watch the timeline (`classify` → `draft_reply` → proposed action) → **Approve** or **Reject**. Switch the provider in the header to compare Local / Gemini / Groq.
 
@@ -39,7 +39,7 @@ A compact but honest showcase of the skills behind shipping an AI feature, not j
 - 🛡️ **Security & guardrails** — input validation, rate limiting, prompt-injection mitigations, and secrets kept out of the image ([details](#security--guardrails)).
 - 💸 **Cost engineering** — per-task model routing (cheap 8B classify / 70B draft), response caching, and token caps, all measured ([details](#cost-optimization)).
 - 🔭 **Observability** — OpenTelemetry traces + token-usage metrics exported to Azure Application Insights ([details](#observability-application-insights)).
-- 🚀 **Deployment** — multi-stage Docker image → Azure Container Apps (scale-to-zero) → Neon serverless Postgres ([details](#deployment)).
+- 🚀 **Deployment** — multi-stage Docker image, portable across Azure Container Apps and Render (currently live on Render, free tier) → Neon serverless Postgres ([details](#deployment)).
 - 📊 **Evaluation** — a harness that measures classification and escalation accuracy, because "it's AI" is not a test strategy.
 
 ## Problem statement
@@ -191,22 +191,22 @@ switch (run.PendingToolName)
 
 ## Production architecture
 
-Deployed, the same code runs as a container on **Azure Container Apps**, talks to **Neon serverless Postgres**, uses **Groq** as the cloud LLM, and streams telemetry to **Azure Application Insights**. Every arrow crossing a trust boundary is configured by environment variable / platform secret — no credentials in the image.
+Deployed, the same container image runs on **Render** (currently live), talks to **Neon serverless Postgres**, uses **Groq** as the cloud LLM, and streams telemetry to **Azure Application Insights** when configured. The same image is portable — it previously ran unchanged on **Azure Container Apps**, which remains a supported alternative path (see [Deployment](#deployment)). Every arrow crossing a trust boundary is configured by environment variable / platform secret — no credentials in the image.
 
 ```
                     Browser (recruiter / user)
                             │  HTTPS
                             ▼
         ┌───────────────────────────────────────────────┐
-        │  Azure Container Apps                          │
+        │  Render (Docker)                                │
         │  ┌─────────────────────────────────────────┐  │        ┌──────────────────────┐
         │  │  TriageBot container (Blazor Server)     │──┼───────▶│  Groq API (LLM)      │
         │  │  • input validation + rate limiter       │  │  HTTPS │  8B classify /       │
         │  │  • agent + tools + HITL approval         │  │        │  70B draft           │
         │  │  • OpenTelemetry instrumentation         │  │        └──────────────────────┘
         │  └───────────────┬─────────────────┬────────┘  │
-        │  scale-to-zero   │ TLS             │ OTLP       │
-        │  (0→N replicas)  │                 │            │
+        │  sleeps on idle  │ TLS             │ OTLP       │
+        │  (free tier)     │                 │            │
         └──────────────────┼─────────────────┼───────────┘
                            ▼                 ▼
                 ┌────────────────────┐   ┌──────────────────────────┐
@@ -223,7 +223,7 @@ Deployed, the same code runs as a container on **Azure Container Apps**, talks t
 
 | Concern | Choice | Why it fits a low-cost, production-shaped demo |
 | ------- | ------ | ---------------------------------------------- |
-| **Compute** | Azure Container Apps | Managed, HTTPS by default, **scale-to-zero** so an idle demo costs ~nothing. Sticky sessions for Blazor Server circuits. |
+| **Compute** | Render (Docker), portable to Azure Container Apps | Managed, HTTPS by default, sleeps on idle (free tier) so a demo costs ~nothing. Same image also runs unchanged on Azure Container Apps (scale-to-zero) — demonstrates the container isn't tied to one platform. |
 | **Database** | Neon serverless Postgres | Generous free tier; **idle-suspends** when unused. The app retries the cold-start so the first request after a nap doesn't error. |
 | **Cloud LLM** | Groq | Fast, OpenAI-compatible, free tier. Two models (8B/70B) let us route by task for cost. |
 | **Telemetry** | App Insights + OpenTelemetry | Standard distributed tracing + `gen_ai.*` token metrics with no bespoke dashboards. Opt-in by connection string. |
@@ -244,7 +244,7 @@ See [**Deployment**](#deployment) for the scripts and the scale-to-zero / teardo
 | Rate limiting   | ASP.NET Core `RateLimiter` (fixed window) on the triage endpoint       |
 | Persistence     | PostgreSQL + EF Core 10 (Npgsql); Neon serverless in production        |
 | Observability   | OpenTelemetry → Azure Application Insights (traces, `gen_ai` metrics, logs) |
-| Deployment      | Multi-stage Docker image → Azure Container Apps                        |
+| Deployment      | Multi-stage Docker image — live on Render; portable to Azure Container Apps |
 | Tests / eval    | xUnit (38 tests incl. guardrails); a standalone eval console           |
 
 ## Getting started
@@ -652,7 +652,20 @@ and a ransomware note classified `Software`/`High` vs. `Other`/`Critical`.
 
 ## Deployment
 
+### Render (current live deployment)
+
+The live demo runs on [Render](https://render.com)'s free tier as a Docker web service, built straight from the repo's [`Dockerfile`](Dockerfile) — no extra config beyond environment variables (`ConnectionStrings__TriageBotDb`, `Groq__ApiKey`, `Ai__DefaultProvider=Groq`, `RunMigrationsOnStartup=true`). Render auto-deploys on push to the connected branch.
+
+Free tier specifics:
+- The service **sleeps after ~15 min idle** and wakes on the next request (~30-60s, compounded by Neon's own cold-start) — handled by the app's existing retry logic, so it's slow, not broken.
+- No scale-to-zero *command* needed — sleep/wake is automatic on the free plan.
+- Teardown: delete the service from the Render dashboard (Neon and Groq still need separate cleanup, same as below).
+
+### Azure Container Apps (alternative path)
+
 The full walkthrough (prerequisites, ACR build/push, provider registration, troubleshooting) is in **[`deploy/README-deploy.md`](deploy/README-deploy.md)**. In short:
+
+> The commands below (`az containerapp`, `az group delete`) are **Azure-specific** — they don't apply to the current Render deployment. Kept here because the same image is portable and this path remains supported.
 
 ```bash
 # Build the image locally, push to Azure Container Registry, and deploy to Container Apps.
@@ -692,7 +705,7 @@ This is an intentional MVP. Known trade-offs, stated honestly:
 
 - **Free-tier rate limits** — Groq's free tier caps both **tokens-per-minute** (≈6k on the 8B, ≈12k on the 70B) and **tokens-per-day** (e.g. 100k/day on the 70B). A single interactive ticket is fine, but a batch (e.g. the eval running tickets back-to-back) bursts past TPM, and enough cumulative use in a day can exhaust TPD. The app handles both gracefully — a bounded, fast retry (not the provider's own possibly-long `Retry-After`), then a clear "wait and try again" message + `Retry-After` header on the API — instead of hanging; throughput is simply capped by the tier (pace the eval with `--delay`, check headroom with `scripts/check-groq-limits.ps1`, or use a paid tier / Gemini / local).
 - **Single replica (Blazor Server)** — the UI holds server-side circuits, so horizontal scale needs sticky sessions and the demo runs one replica. It is **not** a horizontally-scaled, multi-instance deployment.
-- **Cold starts** — with scale-to-zero (Container Apps) and Neon's idle-suspend, the first request after a quiet period is slow while both wake up.
+- **Cold starts** — Render's free-tier sleep-on-idle (or Container Apps scale-to-zero) plus Neon's idle-suspend mean the first request after a quiet period is slow (~30-60s on Render) while both wake up.
 - **Model quality** — small local models classify less accurately than cloud models and can mis-format tool calls.
 - **Speed (local)** — local CPU inference can be slow (seconds to minutes per ticket).
 - **Small eval** — the labelled dataset is ~10 illustrative cases, not a statistically meaningful benchmark.
