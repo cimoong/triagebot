@@ -18,9 +18,9 @@ TriageBot is a production-minded .NET 10 sample that shows how to build a *real*
 
 ### 🔗 Live demo
 
-**Try it:** [`<LIVE_DEMO_URL>`](https://example.com) &nbsp;·&nbsp; *(hosted on Azure Container Apps — scales to zero, so the first request after idle may cold-start for a few seconds.)*
+**Try it:** [`triagebot.politeocean-60f73750.southeastasia.azurecontainerapps.io`](https://triagebot.politeocean-60f73750.southeastasia.azurecontainerapps.io/) &nbsp;·&nbsp; *(hosted on Azure Container Apps — scales to zero, so the first request after idle may cold-start for a few seconds.)*
 
-> Replace `<LIVE_DEMO_URL>` with your deployed URL. **To try it:** open the link → **Tickets** → **Add ticket** (or use a seeded one) → **Process with agent** → watch the timeline (`classify` → `draft_reply` → proposed action) → **Approve** or **Reject**. Switch the provider in the header to compare Local / Gemini / Groq.
+> **To try it:** open the link → **Tickets** → **Add ticket** (or use a seeded one) → **Process with agent** → watch the timeline (`classify` → `draft_reply` → proposed action) → **Approve** or **Reject**. Switch the provider in the header to compare Local / Gemini / Groq.
 
 ![TriageBot demo — process a ticket, view the timeline, approve, resolve](docs/demo.gif)
 
@@ -602,7 +602,7 @@ dotnet run --project eval/TriageBot.Eval -- local path/to/your-tickets.json
 | `--delay <seconds>` | Pause between tickets to stay under a per-minute token limit (full pipeline on a free tier). |
 | `--verbose` | Print the per-run `Run … cost — … total_tokens=… latency_ms=…` line (for the cost table). |
 
-> **Note on Groq free-tier limits.** Groq's free tier enforces a low **tokens-per-minute (TPM)** limit (≈6,000 for the 8B model, ≈12,000 for the 70B). A single **interactive** ticket in the app is fine, but the full-pipeline **batch eval** fires several large 70B tool-loop calls per ticket, so back-to-back tickets burst past TPM and calls time out / return **HTTP 429**. Two ways around it:
+> **Note on Groq free-tier limits.** Groq's free tier enforces a low **tokens-per-minute (TPM)** limit (≈6,000 for the 8B model, ≈12,000 for the 70B) **and** a separate **tokens-per-day (TPD)** cap (e.g. 100,000/day for the 70B model on this account). A single **interactive** ticket in the app is fine, but the full-pipeline **batch eval** fires several large 70B tool-loop calls per ticket, so back-to-back tickets burst past TPM — and enough cumulative testing in a day can exhaust TPD too, returning **HTTP 429** with a message like `Rate limit reached ... tokens per day (TPD): Limit 100000, Used 99876 ... try again in 29m18s` (a rolling window, not a full 24h wait). Two ways around it:
 >
 > ```bash
 > # Reliable on the free tier: measures classification (category + urgency) only.
@@ -615,16 +615,8 @@ dotnet run --project eval/TriageBot.Eval -- local path/to/your-tickets.json
 > Verify your own limits from the `x-ratelimit-*` response headers or the [Groq console](https://console.groq.com) → *Settings → Limits*.
 
 Each case in `tickets.json` carries `expectedCategory`, `expectedUrgency`, and `shouldEscalate`. The
-runner prints a per-ticket line and a summary:
-
-```
-Category accuracy:   _/_
-Urgency accuracy:    _/_
-Escalation accuracy: _/_
-Avg latency:         ___ ms
-```
-
-![Eval run summary](docs/Evaluation.png)
+runner prints a per-ticket line and a summary (category/urgency/escalation accuracy + average latency)
+— see the real numbers from a Groq run below.
 
 ### Results (Groq)
 
@@ -682,19 +674,23 @@ The trade-off is a **cold start**: the first request after idle spins a replica 
 
 ### Tear down (stop all charges)
 
-Deleting the resource group removes the app, registry, and any managed identity in one shot:
+```powershell
+./deploy/teardown-azure.ps1
+```
+
+Deletes the resource group (app, registry, environment) in one shot, after listing what's inside and asking you to confirm the name. Pass `-Force` to skip the prompt, or run the underlying command directly:
 
 ```bash
 az group delete --name <resource-group> --yes --no-wait
 ```
 
-Delete the Neon project separately from the Neon console. (Neon and Groq free tiers cost nothing while idle, but delete them if you're done.)
+This only covers Azure. Delete the **Neon** project separately from the Neon console — a different service, not touched by the script. **Groq** has no resource to delete; just stop using / rotate the key.
 
 ## Limitations
 
 This is an intentional MVP. Known trade-offs, stated honestly:
 
-- **Free-tier rate limits** — Groq's free tier caps **tokens-per-minute** (≈6k on the 8B, ≈12k on the 70B). A single interactive ticket is fine, but a batch (e.g. the eval running tickets back-to-back) bursts past TPM and hits **HTTP 429**. The app handles this gracefully (retry, then a clear "wait and try again" message + `Retry-After`); throughput is simply capped by the tier (pace the eval with `--delay`, or use a paid tier / Gemini / local).
+- **Free-tier rate limits** — Groq's free tier caps both **tokens-per-minute** (≈6k on the 8B, ≈12k on the 70B) and **tokens-per-day** (e.g. 100k/day on the 70B). A single interactive ticket is fine, but a batch (e.g. the eval running tickets back-to-back) bursts past TPM, and enough cumulative use in a day can exhaust TPD. The app handles both gracefully — a bounded, fast retry (not the provider's own possibly-long `Retry-After`), then a clear "wait and try again" message + `Retry-After` header on the API — instead of hanging; throughput is simply capped by the tier (pace the eval with `--delay`, check headroom with `scripts/check-groq-limits.ps1`, or use a paid tier / Gemini / local).
 - **Single replica (Blazor Server)** — the UI holds server-side circuits, so horizontal scale needs sticky sessions and the demo runs one replica. It is **not** a horizontally-scaled, multi-instance deployment.
 - **Cold starts** — with scale-to-zero (Container Apps) and Neon's idle-suspend, the first request after a quiet period is slow while both wake up.
 - **Model quality** — small local models classify less accurately than cloud models and can mis-format tool calls.

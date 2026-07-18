@@ -76,8 +76,10 @@ public sealed class TicketTriageService : ITicketTriageService
         // proposal on the run and moves the ticket to AwaitingApproval, then the agent stops.
         var tools = new TicketTools(_db, run.Id);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        UsageDetails? classifyUsage;
-        AgentResponse response;
+        // Declared outside the try so whatever succeeded before a later failure (e.g. classification
+        // completing before the draft phase times out) is still available to log below.
+        UsageDetails? classifyUsage = null;
+        AgentResponse? response = null;
         try
         {
             classifyUsage = await _classifier.ClassifyAndRecordAsync(ticket, provider, tools, cancellationToken);
@@ -88,6 +90,11 @@ public sealed class TicketTriageService : ITicketTriageService
             // The provider is unreachable/timed out/rate-limited, or a tool threw. Fail the run cleanly:
             // record it, leave a visible audit step, and don't strand the ticket in Processing.
             await FailRunAsync(run, ticket, tools, ex, cancellationToken);
+
+            // Log whatever token usage we actually have (e.g. classification succeeded before the draft
+            // phase's closing LLM turn timed out) instead of silently dropping the cost line on failure.
+            stopwatch.Stop();
+            LogTokenUsage(run.Id, ticketId, provider, classifyUsage, response?.Usage, stopwatch.ElapsedMilliseconds, failed: true);
 
             if (IsRateLimit(ex))
             {
@@ -114,6 +121,8 @@ public sealed class TicketTriageService : ITicketTriageService
                 $"The triage agent could not complete. Is the '{provider}' AI provider running and reachable?", ex);
         }
         stopwatch.Stop();
+        // Reaching here means the try block completed without throwing, so response was assigned.
+        System.Diagnostics.Debug.Assert(response is not null);
 
         // Concise per-run cost line (tokens + latency), complementing the OpenTelemetry gen_ai metrics.
         LogTokenUsage(run.Id, ticketId, provider, classifyUsage, response.Usage, stopwatch.ElapsedMilliseconds);
@@ -213,9 +222,12 @@ public sealed class TicketTriageService : ITicketTriageService
     /// <summary>
     /// Logs a one-line token/latency summary per run so cost can be measured (and compared before/after
     /// the model-split + caching optimization) without a telemetry backend. Split by phase because the
-    /// classification and drafting phases use different models.
+    /// classification and drafting phases use different models. Called on both success and failure — if
+    /// the draft phase's final (post-tool-call) turn times out, classification usage was still real spend
+    /// and should not be silently dropped just because the overall run then failed.
     /// </summary>
-    private void LogTokenUsage(Guid runId, Guid ticketId, AiProvider provider, UsageDetails? classify, UsageDetails? agent, long ms)
+    private void LogTokenUsage(
+        Guid runId, Guid ticketId, AiProvider provider, UsageDetails? classify, UsageDetails? agent, long ms, bool failed = false)
     {
         var cin = classify?.InputTokenCount ?? 0L;
         var cout = classify?.OutputTokenCount ?? 0L;
@@ -223,9 +235,9 @@ public sealed class TicketTriageService : ITicketTriageService
         var aout = agent?.OutputTokenCount ?? 0L;
 
         _logger.LogInformation(
-            "Run {RunId} cost — provider={Provider} classify(in/out)={CIn}/{COut} draft(in/out)={AIn}/{AOut} " +
+            "Run {RunId} cost — provider={Provider}{Failed} classify(in/out)={CIn}/{COut} draft(in/out)={AIn}/{AOut} " +
             "total_tokens={Total} latency_ms={Ms}",
-            runId, provider, cin, cout, ain, aout, cin + cout + ain + aout, ms);
+            runId, provider, failed ? " (run failed — draft usage may be incomplete)" : "", cin, cout, ain, aout, cin + cout + ain + aout, ms);
     }
 
     /// <summary>

@@ -42,17 +42,20 @@ public static class AiServiceCollectionExtensions
         services.AddHttpClient(LocalHttpClient, (sp, http) =>
                 http.Timeout = TimeSpan.FromSeconds(
                     sp.GetRequiredService<IOptions<LocalAiOptions>>().Value.TimeoutSeconds))
-            .AddLlmResilience();
+            .AddLlmResilience()
+            .AddLlmConnectionRecycling();
 
         services.AddHttpClient(GeminiHttpClient, (sp, http) =>
                 http.Timeout = TimeSpan.FromSeconds(
                     sp.GetRequiredService<IOptions<GeminiOptions>>().Value.TimeoutSeconds))
-            .AddLlmResilience();
+            .AddLlmResilience()
+            .AddLlmConnectionRecycling();
 
         services.AddHttpClient(GroqHttpClient, (sp, http) =>
                 http.Timeout = TimeSpan.FromSeconds(
                     sp.GetRequiredService<IOptions<GroqOptions>>().Value.TimeoutSeconds))
-            .AddLlmResilience();
+            .AddLlmResilience()
+            .AddLlmConnectionRecycling();
 
         // Keyed chat client: Local (Ollama). No API key needed; "ollama" is a placeholder credential.
         services.AddKeyedChatClient(AiClientResolver.KeyFor(AiProvider.Local), sp =>
@@ -82,7 +85,7 @@ public static class AiServiceCollectionExtensions
                 var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient(GeminiHttpClient);
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
-            .UseFunctionInvocation()
+            .UseFunctionInvocation(configure: f => f.MaximumIterationsPerRequest = MaxToolIterations)
             .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
             .UseLogging();
 
@@ -102,7 +105,9 @@ public static class AiServiceCollectionExtensions
                 var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient(GroqHttpClient);
                 return BuildOpenAiCompatibleClient(o.Endpoint, o.ApiKey, o.ChatModel, http);
             })
-            .UseFunctionInvocation()
+            // Same iteration cap as every other provider: bounds tokens-per-request, which matters most on
+            // Groq's low free-tier tokens-per-minute limit (each extra tool-loop iteration adds a full call).
+            .UseFunctionInvocation(configure: f => f.MaximumIterationsPerRequest = MaxToolIterations)
             .UseOpenTelemetry(sourceName: TriageBotTelemetry.ChatSourceName, configure: c => c.EnableSensitiveData = false)
             .UseLogging();
 
@@ -172,13 +177,43 @@ public static class AiServiceCollectionExtensions
     /// and the default predicate does not retry that cancellation — so a legitimately slow generation runs to
     /// completion instead of triggering a retry storm, while a momentarily unavailable provider is retried.
     /// </summary>
-    private static void AddLlmResilience(this IHttpClientBuilder builder) =>
+    /// <remarks>
+    /// ROOT CAUSE FIX (Groq draft-phase "hang"): by default <see cref="HttpRetryStrategyOptions.ShouldRetryAfterHeader"/>
+    /// is true, so on a 429 the retry strategy honors the provider's <c>Retry-After</c> response header instead of our
+    /// configured <see cref="HttpRetryStrategyOptions.Delay"/>. Diagnosed live: Groq answered a 429 in ~100ms (not a
+    /// network stall), but the client then silently waited on Retry-After before the retry's HTTP request was ever
+    /// dispatched — long enough to exceed the overall <see cref="HttpClient.Timeout"/>, surfacing as a false "timed
+    /// out" with zero visible activity in between. We already detect 429 explicitly (<c>TicketTriageService.IsRateLimit</c>)
+    /// and give the user a clear, immediate message, so honoring an arbitrary provider-dictated wait here only makes
+    /// the failure slower and less legible. ShouldRetryAfterHeader=false makes 429 use OUR bounded, fast delay instead.
+    /// </remarks>
+    private static IHttpClientBuilder AddLlmResilience(this IHttpClientBuilder builder)
+    {
         builder.AddResilienceHandler("llm-retry", pipeline =>
             pipeline.AddRetry(new HttpRetryStrategyOptions
             {
                 MaxRetryAttempts = 2,
                 Delay = TimeSpan.FromSeconds(1),
                 BackoffType = DelayBackoffType.Exponential,
-                UseJitter = true
+                UseJitter = true,
+                ShouldRetryAfterHeader = false
             }));
+        return builder;
+    }
+
+    /// <summary>
+    /// Recycles pooled keep-alive connections periodically and bounds how long a connection ATTEMPT can
+    /// take. <see cref="IHttpClientFactory"/>-managed <see cref="HttpClient"/>s are long-lived (this app's
+    /// process can run for hours across many requests); without this, <see cref="SocketsHttpHandler"/> can
+    /// keep reusing a connection that has silently gone stale (the remote end closed it, a network path
+    /// changed) — a new request routed onto that stale connection can hang until <see cref="HttpClient.Timeout"/>
+    /// elapses even though the provider is actually healthy and fast (visible as: a fresh process/curl call
+    /// to the same endpoint returns in under a second, while the long-running app hangs for the full timeout).
+    /// </summary>
+    private static IHttpClientBuilder AddLlmConnectionRecycling(this IHttpClientBuilder builder) =>
+        builder.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            ConnectTimeout = TimeSpan.FromSeconds(15)
+        });
 }
