@@ -7,17 +7,15 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Copy ONLY the project files first and restore. This layer is cached and reused
-# as long as the .csproj files don't change, so code edits don't trigger a full
-# NuGet restore on every build.
-COPY src/TriageBot.Core/TriageBot.Core.csproj                     src/TriageBot.Core/
-COPY src/TriageBot.Infrastructure/TriageBot.Infrastructure.csproj src/TriageBot.Infrastructure/
-COPY src/TriageBot.Web/TriageBot.Web.csproj                       src/TriageBot.Web/
-RUN dotnet restore src/TriageBot.Web/TriageBot.Web.csproj
-
-# Now copy the rest of the source and publish. Restore is skipped (already done).
-# UseAppHost=false: no native launcher needed, we start via `dotnet TriageBot.Web.dll`.
+# Copy the full source tree before restoring. Restoring against only the .csproj files (with the
+# rest of the source copied in afterward) reliably fails to stage Blazor's framework-provided static
+# web assets (wwwroot/_framework/blazor.web.js ends up missing from the publish output, 404 at
+# runtime) even though the build itself succeeds — some part of static-web-assets resolution depends
+# on the full project layout being present at restore time. Copying everything up front costs the
+# restore-layer cache (a source-only edit now invalidates restore too), but that's a fair trade for a
+# correct build; this is a small project where restore is a few seconds anyway.
 COPY src/ src/
+RUN dotnet restore src/TriageBot.Web/TriageBot.Web.csproj
 RUN dotnet publish src/TriageBot.Web/TriageBot.Web.csproj \
     -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
