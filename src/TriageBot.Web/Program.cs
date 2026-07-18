@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using Azure.Monitor.OpenTelemetry.AspNetCore;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
@@ -80,6 +81,26 @@ if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
 
 var app = builder.Build();
 
+// Render (and most PaaS reverse proxies) terminate TLS at the edge and forward plain HTTP to the
+// container, adding X-Forwarded-Proto/X-Forwarded-For. Without this, HttpContext.Request.Scheme stays
+// "http" and Request.IsHttps is false, which breaks Blazor Server's SignalR negotiate step (it builds a
+// ws:// URL instead of wss://, which the browser then refuses on an https page) and causes blazor.web.js
+// to fail wiring up the interactive circuit. This must run before every other middleware so downstream
+// components see the corrected scheme/remote IP.
+//
+// KnownNetworks/KnownProxies are cleared because Render's proxy IP is not fixed/documented — the
+// default (trust only localhost) would silently ignore the headers and reproduce this exact bug.
+// Trade-off: with them empty, ASP.NET Core trusts X-Forwarded-* from ANY caller, so if the app were ever
+// reachable directly (bypassing Render's edge), a client could spoof its scheme/IP. Acceptable here
+// because Render's edge is the only network path to the container. If that assumption changes, pin
+// KnownProxies to Render's documented ranges instead.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    KnownIPNetworks = { },
+    KnownProxies = { }
+});
+
 // Log which database this instance targets — host + database only, never the password —
 // so it's obvious at a glance whether it's pointing at local Postgres or a managed one (Neon).
 {
@@ -115,7 +136,11 @@ if (!app.Environment.IsDevelopment())
 // Convert unhandled exceptions on non-Razor (API) routes into RFC 7807 responses (no stack trace leaked).
 app.UseStatusCodePages();
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-app.UseHttpsRedirection();
+// No UseHttpsRedirection: Render's edge already terminates TLS and redirects http->https before ever
+// proxying to this container, so there is no plain-http path reaching the app to redirect. Keeping this
+// middleware would add a second redirect decision that depends on ForwardedHeaders having parsed
+// correctly on every request — if it ever missed once, this would redirect an already-https request
+// and reintroduce the loop it's meant to prevent. Removing it is safer than depending on that ordering.
 
 app.UseRateLimiter();
 
