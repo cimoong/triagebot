@@ -37,7 +37,7 @@ A compact but honest showcase of the skills behind shipping an AI feature, not j
 - 🏛️ **Clean Architecture** — dependencies point inward; the domain knows nothing about EF Core or any LLM.
 - 🛡️ **Security & guardrails** — input validation, rate limiting, prompt-injection mitigations, and secrets kept out of the image ([details](#security--guardrails)).
 - 💸 **Cost engineering** — per-task model routing (cheap 8B classify / 70B draft), response caching, and token caps, all measured ([details](#cost-optimization)).
-- 🔭 **Observability** — OpenTelemetry traces + token-usage metrics exported to Azure Application Insights ([details](#observability-application-insights)).
+- 🔭 **Observability** — OpenTelemetry traces + token-usage metrics, exportable to Azure Application Insights when a connection string is configured ([details](#observability-application-insights)).
 - 🚀 **Deployment** — multi-stage Docker image, portable across Azure Container Apps and Render (currently live on Render, free tier) → Neon serverless Postgres ([details](#deployment)).
 - 📊 **Evaluation** — a harness that measures classification and escalation accuracy, because "it's AI" is not a test strategy.
 
@@ -403,12 +403,9 @@ Agent run span            (source: TriageBot.Agent — one per ProcessTicketAsyn
 Because the agent uses `IChatClient` through the resolver, this works identically for **all
 providers** (Local / Gemini / Groq) — the instrumentation sits in the shared pipeline.
 
-<!-- Placeholder: paste an Application Insights screenshot (end-to-end transaction with the nested
-     agent → LLM → tool spans, or the gen_ai token-usage metric chart) and update the path below. -->
-
 ![Application Insights — end-to-end transaction: agent run span with nested LLM and tool spans, and gen_ai token metrics](docs/appinsights.png)
 
-> Replace `docs/appinsights.png` with your own capture (Transaction search → an agent run, or a `gen_ai.*` token-usage metric chart).
+> Captured during local/Azure testing to verify the instrumentation end-to-end. The **current live Render deployment runs without `APPLICATIONINSIGHTS_CONNECTION_STRING` set** — App Insights is opt-in and skipped to keep the free-tier demo at zero telemetry cost. Set the connection string (see below) on any deployment to turn it back on; nothing else changes.
 
 ### How to test
 
